@@ -361,9 +361,15 @@ function render(data){
   document.getElementById('topLocality').textContent = data.localities[0] ? data.localities[0].ADM2_NAME : '—';
 
   const ytdBadge = document.getElementById('ytdBadge');
-  ytdBadge.innerHTML = data.meta.is_ytd
-    ? `<span class="ytd-dot"></span> الموسم جارٍ — مقارنة عادلة حتى تاريخ اليوم`
-    : `<span class="ytd-dot"></span> موسم مكتمل تقويمياً`;
+  if (data.meta.is_ytd) {
+    const cutoff = data.meta.effective_cutoff_date || '';
+    const latencyNote = data.meta.data_latency_adjusted
+      ? ' (تم تعديل نقطة القطع تلقائياً بسبب فجوة نشر بيانات CHIRPS)'
+      : '';
+    ytdBadge.innerHTML = `<span class="ytd-dot"></span> مقارنة عادلة حتى ${cutoff}${latencyNote}`;
+  } else {
+    ytdBadge.innerHTML = `<span class="ytd-dot"></span> موسم مكتمل تقويمياً`;
+  }
 
   // --- Map ---
   currentTiles = data.map.tiles;
@@ -470,4 +476,3 @@ loadData();
 </script>
 </body>
 </html>
-
