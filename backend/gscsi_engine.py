@@ -114,9 +114,27 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
 
     _today = datetime.date.today()
     is_ytd = (season_year == _today.year) and (_today < datetime.date(season_year, end_month, 1))
+    data_latency_adjusted = False
     if is_ytd:
         eff_end_month, eff_end_day = _today.month, _today.day
         SEASON_END = ee.Date.fromYMD(season_year, eff_end_month, eff_end_day)
+
+        # ---- صمام أمان توفر البيانات (منقول من الدفتر الأصلي) ----
+        # بيانات CHIRPS تُنشر بفجوة زمنية (latency) عن التاريخ الفعلي. لو طلبنا بيانات
+        # "لحد اليوم" لكن آخر صورة منشورة أقدم من كده، هنحصل على مجموع أمطار ناقص بشكل
+        # مصطنع (يفوّت آخر أسابيع فعلية) بينما السنوات التاريخية كاملة تماماً — ده بيضخّم
+        # انحراف الأمطار سلباً بشكل غير حقيقي. نصحّح نقطة القطع تلقائياً لآخر بيانات متاحة.
+        latest_chirps_img = (
+            ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
+            .filterBounds(AOI).sort("system:time_start", False).first()
+        )
+        chirps_latest_str = ee.Date(latest_chirps_img.get("system:time_start")).format("YYYY-MM-dd").getInfo()
+        chirps_latest_date = datetime.date.fromisoformat(chirps_latest_str)
+        requested_end_date = datetime.date(season_year, eff_end_month, eff_end_day)
+        if chirps_latest_date < requested_end_date:
+            eff_end_month, eff_end_day = chirps_latest_date.month, chirps_latest_date.day
+            SEASON_END = ee.Date.fromYMD(season_year, eff_end_month, eff_end_day)
+            data_latency_adjusted = True
     else:
         eff_end_month, eff_end_day = end_month, None
 
@@ -289,13 +307,12 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
 
     def get_dekadal_rainfall_collection(year, s_month, e_month, aoi):
         start = ee.Date.fromYMD(year, s_month, 1)
-        requested_end = ee.Date.fromYMD(year, e_month, 1).advance(1, "month")
-        effective_end = requested_end
-        today_date = datetime.date.today()
-        if year == today_date.year:
-            today_ee = ee.Date.fromYMD(today_date.year, today_date.month, today_date.day)
-            effective_end = ee.Date(ee.Algorithms.If(requested_end.millis().gt(today_ee.millis()), today_ee, requested_end))
-        end = effective_end
+        # نستخدم نفس نقطة القطع المصحّحة (eff_end_month/eff_end_day بعد صمام أمان توفر
+        # البيانات) بدل "اليوم" الفعلي مباشرة، لتفادي نفس مشكلة فجوة نشر CHIRPS هنا أيضاً.
+        if is_ytd and year == season_year:
+            end = ee.Date.fromYMD(year, eff_end_month, eff_end_day)
+        else:
+            end = ee.Date.fromYMD(year, e_month, 1).advance(1, "month")
         n_days = end.difference(start, "day")
         n_dekads = ee.Number(n_days).divide(10).floor().max(0)
         dekad_list = ee.List.sequence(0, n_dekads.subtract(1))
@@ -463,6 +480,10 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             "start_month": start_month,
             "end_month": end_month,
             "is_ytd": is_ytd,
+            "effective_cutoff_date": (
+                f"{season_year:04d}-{eff_end_month:02d}-{eff_end_day:02d}" if is_ytd else None
+            ),
+            "data_latency_adjusted": data_latency_adjusted,
             "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
         },
         "summary": {
