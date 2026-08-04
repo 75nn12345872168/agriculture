@@ -74,6 +74,18 @@ def tile_url(ee_image, vis_params):
 # 2) منطقة الدراسة (تُحسب مرة واحدة وتُخزَّن مؤقتاً)
 # ----------------------------------------------------------------------------
 @functools.lru_cache(maxsize=1)
+def load_cropland_mask():
+    """
+    قناع الأراضي الزراعية الفعلية — مصدره ESA WorldCover v200 (دقة 10م، 2021)، وهو
+    مجاني ومتاح عالمياً في Earth Engine. الفئة 40 = أراضي زراعية (Cropland).
+    استخدام القناع ده بيخلي المؤشرات تتحسب على الحقول الزراعية فعلياً بدل ما تتخفف
+    بمتوسط يشمل الصحراء/الغابات/المدن الموجودة في نفس المحلية.
+    """
+    worldcover = ee.ImageCollection("ESA/WorldCover/v200").first()
+    return worldcover.eq(40).rename("cropland")
+
+
+@functools.lru_cache(maxsize=1)
 def load_gedaref_boundaries():
     gaul1 = ee.FeatureCollection("FAO/GAUL/2015/level1")
     gaul2 = ee.FeatureCollection("FAO/GAUL/2015/level2")
@@ -103,6 +115,7 @@ EPS = 1e-6
 def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     init_earth_engine()
     AOI, GEDAREF_STATE_FC, GEDAREF_LOCALITIES = load_gedaref_boundaries()
+    CROPLAND_MASK = load_cropland_mask().clip(AOI)
 
     RAIN_HIST_START_YEAR = 1991
     RAIN_HIST_END_YEAR = season_year - 1
@@ -385,16 +398,19 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     )
 
     # ---------------- Tile URLs for the web map ----------------
+    # الطبقات دي بتتقصّ على الأراضي الزراعية الفعلية بس (قناع WorldCover) — البكسلات
+    # برّه الأراضي الزراعية بتبقى شفافة فتظهر خريطة الأساس تحتها، فتشوفي بالظبط فين
+    # الحقول المجهدة بدل ما تتوه في متوسط يشمل صحراء/مدن.
     gscsi_vis = {"min": 0, "max": 100, "palette": GSCSI_CLASS_PALETTE}
     class_vis = {"min": 1, "max": 5, "palette": GSCSI_CLASS_PALETTE}
     ndvi_vis = {"min": -0.2, "max": 0.9, "palette": ["a50026", "fee08b", "1a9850"]}
     rain_anom_vis = {"min": -60, "max": 60, "palette": ["a50026", "ffffbf", "1a9850"]}
 
     tiles = {
-        "gscsi": tile_url(GSCSI, gscsi_vis),
-        "class": tile_url(GSCSI_CLASS, class_vis),
-        "ndvi": tile_url(s2_current.select("NDVI"), ndvi_vis),
-        "rainfall_anomaly": tile_url(rainfall_anomaly_pct, rain_anom_vis),
+        "gscsi": tile_url(GSCSI.updateMask(CROPLAND_MASK), gscsi_vis),
+        "class": tile_url(GSCSI_CLASS.updateMask(CROPLAND_MASK), class_vis),
+        "ndvi": tile_url(s2_current.select("NDVI").updateMask(CROPLAND_MASK), ndvi_vis),
+        "rainfall_anomaly": tile_url(rainfall_anomaly_pct.updateMask(CROPLAND_MASK), rain_anom_vis),
     }
 
     # ---------------- Zonal stats per locality ----------------
@@ -405,10 +421,20 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
         .addBands(s2_current)
         .addBands(VCI.rename("VCI")).addBands(TCI.rename("TCI"))
     )
-    stats_fc = zonal_image.reduceRegions(
-        collection=GEDAREF_LOCALITIES, reducer=ee.Reducer.mean(), scale=500, tileScale=8
+
+    def zonal_stats_df(image):
+        fc = image.reduceRegions(collection=GEDAREF_LOCALITIES, reducer=ee.Reducer.mean(), scale=500, tileScale=8)
+        return fc_to_df(fc).set_index("ADM2_NAME")
+
+    # نحسب مرتين: نسخة مقصوصة على الأراضي الزراعية (الأدق)، ونسخة كاملة كاحتياط (fallback)
+    # لأي محلية ممكن ماتحتويش على بكسلات زراعية كافية بعد التصفية (تفادياً لقيم فارغة).
+    df_cropland = zonal_stats_df(zonal_image.updateMask(CROPLAND_MASK))
+    df_fallback = zonal_stats_df(zonal_image)
+    df_stats = df_cropland.combine_first(df_fallback).reset_index()
+    crop_mask_coverage = (
+        df_cropland["GSCSI"].notna().sum() if "GSCSI" in df_cropland.columns else 0
     )
-    df_stats = fc_to_df(stats_fc)
+
     if "GSCSI_Class" in df_stats.columns:
         df_stats["GSCSI_Class_Label"] = df_stats["GSCSI_Class"].round().map(GSCSI_CLASS_LABELS)
     keep_cols = [c for c in [
@@ -450,8 +476,17 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     }
 
     # ---------------- Summary ----------------
-    gscsi_mean_info = GSCSI.reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=1000, maxPixels=1e9).getInfo()
-    gscsi_mean = round(gscsi_mean_info.get("GSCSI", 0), 1) if gscsi_mean_info.get("GSCSI") is not None else None
+    # نفس مبدأ القص على الأراضي الزراعية + احتياط لو القص رجّع فاضي (مثلاً لو القناع
+    # مايغطيش المنطقة لأي سبب) — نرجع للمتوسط الكامل بدل ما نطلّع قيمة فارغة.
+    def region_mean(image, band_name, mask=True):
+        img = image.updateMask(CROPLAND_MASK) if mask else image
+        info = img.reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=1000, maxPixels=1e9).getInfo()
+        return info.get(band_name)
+
+    gscsi_mean_val = region_mean(GSCSI, "GSCSI", mask=True)
+    if gscsi_mean_val is None:
+        gscsi_mean_val = region_mean(GSCSI, "GSCSI", mask=False)
+    gscsi_mean = round(gscsi_mean_val, 1) if gscsi_mean_val is not None else None
     if gscsi_mean is None:
         gscsi_class_label = "غير متوفر"
     elif gscsi_mean >= 90:
@@ -465,12 +500,12 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     else:
         gscsi_class_label = "فشل"
 
-    rain_mean_info = rain_current_season.reduceRegion(
-        reducer=ee.Reducer.mean(), geometry=AOI, scale=1000, maxPixels=1e9
-    ).getInfo()
-    rain_anom_info = rainfall_anomaly_pct.reduceRegion(
-        reducer=ee.Reducer.mean(), geometry=AOI, scale=1000, maxPixels=1e9
-    ).getInfo()
+    rain_mean_val = region_mean(rain_current_season, "precipitation", mask=True)
+    if rain_mean_val is None:
+        rain_mean_val = region_mean(rain_current_season, "precipitation", mask=False)
+    rain_anom_val = region_mean(rainfall_anomaly_pct, "Rainfall_Anomaly_Pct", mask=True)
+    if rain_anom_val is None:
+        rain_anom_val = region_mean(rainfall_anomaly_pct, "Rainfall_Anomaly_Pct", mask=False)
 
     centroid = AOI.centroid(1).coordinates().getInfo()  # [lon, lat]
 
@@ -484,13 +519,16 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
                 f"{season_year:04d}-{eff_end_month:02d}-{eff_end_day:02d}" if is_ytd else None
             ),
             "data_latency_adjusted": data_latency_adjusted,
+            "crop_mask_applied": True,
+            "crop_mask_source": "ESA WorldCover v200 (2021)",
+            "localities_with_cropland_data": int(crop_mask_coverage),
             "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
         },
         "summary": {
             "gscsi_mean": gscsi_mean,
             "gscsi_class_label": gscsi_class_label,
-            "rain_season_mm": round(rain_mean_info.get("precipitation", 0), 1) if rain_mean_info.get("precipitation") is not None else None,
-            "rainfall_anomaly_pct": round(rain_anom_info.get("Rainfall_Anomaly_Pct", 0), 1) if rain_anom_info.get("Rainfall_Anomaly_Pct") is not None else None,
+            "rain_season_mm": round(rain_mean_val, 1) if rain_mean_val is not None else None,
+            "rainfall_anomaly_pct": round(rain_anom_val, 1) if rain_anom_val is not None else None,
         },
         "map": {
             "center": [centroid[1], centroid[0]],
