@@ -281,11 +281,25 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     ONSET_CONFIRM_DEKADS = 2
     ONSET_CONFIRM_MIN_MM = 20
 
+    # مصدر سريع شبه لحظي (تأخير يوم واحد تقريباً، مبني على IMERG) — يُستخدم حصرياً لكشف
+    # بداية الموسم للسنة الحالية فقط، عشان النتيجة تتحدّث فور توفر مطر فعلي بدل انتظار
+    # نشر CHIRPS النهائي (اللي بيتأخر شهر-شهرين). باقي حسابات التطبيق (GSCSI، الأمطار
+    # الرئيسية، المقارنات التاريخية) لسه بتستخدم CHIRPS النهائي المُتحقَّق منه بدون أي
+    # تغيير، حفاظاً على الدقة اللي تطابقت مع المرجع.
+    CHIRPS_FAST = ee.ImageCollection("UCSB-CHC/CHIRPS/V3/DAILY_SAT").select([0], ["precipitation"])
+
     def get_dekad_sums_for_year(year, aoi):
         start = ee.Date.fromYMD(year, ONSET_SEARCH_START_MONTH, 1)
-        # لو السنة هي سنة الموسم الحالي وفيها قص YTD، نوقف البحث عند نفس نقطة القطع
-        # المصححة بدل ما نطلب بيانات لسه مانُشرتش.
-        if is_ytd and year == season_year:
+        use_fast_source = is_ytd and (year == season_year)
+        source = CHIRPS_FAST if use_fast_source else CHIRPS
+
+        if use_fast_source:
+            # المصدر السريع شبه محدَّث لحظياً، فنقص عند "اليوم" الفعلي مباشرة بدل نقطة
+            # قطع CHIRPS النهائي المتأخرة.
+            cutoff = ee.Date.fromYMD(_today.year, _today.month, _today.day)
+            n_days_avail = cutoff.difference(start, "day").max(0)
+            n_dekads = ee.Number(n_days_avail).divide(10).floor().min(ONSET_SEARCH_N_DEKADS)
+        elif is_ytd and year == season_year:
             cutoff = ee.Date.fromYMD(season_year, eff_end_month, eff_end_day)
             n_days_avail = cutoff.difference(start, "day").max(0)
             n_dekads = ee.Number(n_days_avail).divide(10).floor().min(ONSET_SEARCH_N_DEKADS)
@@ -298,13 +312,14 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             d_start = start.advance(i.multiply(10), "day")
             d_end = d_start.advance(10, "day")
             val = (
-                CHIRPS.filterBounds(aoi).filterDate(d_start, d_end).sum()
+                source.filterBounds(aoi).filterDate(d_start, d_end).sum()
                 .reduceRegion(reducer=ee.Reducer.mean(), geometry=aoi, scale=5000, maxPixels=1e9)
                 .get("precipitation", 0)
             )
             return ee.Algorithms.If(val, val, 0)
 
         return dekad_list.map(one)
+
 
     def find_onset_dekad_index(dekad_sums):
         """منطق كشف بداية الموسم يُنفَّذ في بايثون بعد سحب مجاميع العشاريات دفعة واحدة."""
@@ -354,18 +369,17 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     if onset_date_current is not None:
         flow_start = onset_date_current + datetime.timedelta(days=FLOWERING_START_OFFSET_DAYS)
         flow_end = onset_date_current + datetime.timedelta(days=FLOWERING_END_OFFSET_DAYS)
-        # حد أقصى: منتحاوزش نقطة القطع المتاحة فعلياً من البيانات
-        data_cutoff = (
-            datetime.date(season_year, eff_end_month, eff_end_day) if is_ytd
-            else datetime.date(season_year, end_month, 28)
-        )
+        # حد أقصى: المصدر السريع شبه لحظي، فنقص عند "اليوم" الفعلي بدل نقطة قطع
+        # CHIRPS النهائي المتأخرة — لكن فقط للموسم الحالي الجاري (YTD).
+        data_cutoff = _today if is_ytd else datetime.date(season_year, end_month, 28)
         if flow_start <= data_cutoff and (min(flow_end, data_cutoff) - flow_start).days >= 3:
             flow_end_clamped = min(flow_end, data_cutoff)
             flow_start_ee = ee.Date.fromYMD(flow_start.year, flow_start.month, flow_start.day)
             flow_end_ee = ee.Date.fromYMD(flow_end_clamped.year, flow_end_clamped.month, flow_end_clamped.day)
+            flowering_current_source = CHIRPS_FAST if is_ytd else CHIRPS
 
             flowering_rain_current = (
-                CHIRPS.filterBounds(AOI).filterDate(flow_start_ee, flow_end_ee).sum()
+                flowering_current_source.filterBounds(AOI).filterDate(flow_start_ee, flow_end_ee).sum()
                 .reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=5000, maxPixels=1e9)
                 .get("precipitation", 0)
             )
@@ -667,10 +681,15 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             "onset_anomaly_days": onset_anomaly_days,
             "flowering_window": flowering_window,
             "flowering_rainfall_anomaly_pct": flowering_rain_anomaly_pct,
+            "fast_source_used": bool(is_ytd),
+            "fast_source_name": "CHIRPS v3 (IMERG, شبه لحظي)" if is_ytd else None,
             "note": (
                 "تاريخ بداية الموسم مُكتشف ديناميكياً من بيانات الأمطار الفعلية "
                 "(3 عشاريات متتالية بأمطار كافية)، ونافذة الإزهار مُشتقة منه حسب "
-                "أطوال مراحل نمو الذرة الرفيعة القياسية (FAO-56)."
+                "أطوال مراحل نمو الذرة الرفيعة القياسية (FAO-56). ملاحظة: هذه البطاقة "
+                "فقط تستخدم مصدر بيانات أمطار سريع شبه لحظي (تأخير ~يوم واحد) لرصد "
+                "الموسم الجاري فور حدوثه؛ باقي أرقام اللوحة (GSCSI، الأمطار، الخريطة) "
+                "تعتمد على CHIRPS النهائي الأدق للحفاظ على التطابق مع القيم المرجعية."
             ),
         },
     }
