@@ -300,7 +300,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             val = (
                 CHIRPS.filterBounds(aoi).filterDate(d_start, d_end).sum()
                 .reduceRegion(reducer=ee.Reducer.mean(), geometry=aoi, scale=5000, maxPixels=1e9)
-                .get("precipitation")
+                .get("precipitation", 0)
             )
             return ee.Algorithms.If(val, val, 0)
 
@@ -359,7 +359,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             datetime.date(season_year, eff_end_month, eff_end_day) if is_ytd
             else datetime.date(season_year, end_month, 28)
         )
-        if flow_start <= data_cutoff:
+        if flow_start <= data_cutoff and (min(flow_end, data_cutoff) - flow_start).days >= 3:
             flow_end_clamped = min(flow_end, data_cutoff)
             flow_start_ee = ee.Date.fromYMD(flow_start.year, flow_start.month, flow_start.day)
             flow_end_ee = ee.Date.fromYMD(flow_end_clamped.year, flow_end_clamped.month, flow_end_clamped.day)
@@ -367,7 +367,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             flowering_rain_current = (
                 CHIRPS.filterBounds(AOI).filterDate(flow_start_ee, flow_end_ee).sum()
                 .reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=5000, maxPixels=1e9)
-                .get("precipitation")
+                .get("precipitation", 0)
             )
 
             def hist_flowering_sum(y):
@@ -381,7 +381,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             flowering_rain_hist_mean = (
                 hist_flowering_col.mean()
                 .reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=5000, maxPixels=1e9)
-                .get("precipitation")
+                .get("precipitation", 0)
             )
 
             vals = ee.Dictionary({
