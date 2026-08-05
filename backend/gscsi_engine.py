@@ -270,6 +270,128 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     )
     SPI = rain_current_season.subtract(rain_hist_mean).divide(rain_hist_std.add(EPS)).rename("SPI")
 
+    # ---------------- كشف بداية الموسم الفعلية (Rainy Season Onset) ----------------
+    # بدل افتراض تاريخ زراعة ثابت (1 يونيو)، نكتشف التاريخ الفعلي لبداية موسم الأمطار من
+    # بيانات CHIRPS نفسها كل سنة على حدة — بمعيار عشاري (10 أيام) شائع في الرصد الزراعي
+    # الإقليمي بشرق أفريقيا: أول عشاري تراكم أمطاره + العشاريين التاليين معاً ≥ 20مم،
+    # لتفادي "بدايات كاذبة" (أمطار عابرة قليلة ما بيتبعهاش استمرارية).
+    ONSET_SEARCH_START_MONTH = 4  # نبدأ نبحث من أول أبريل
+    ONSET_SEARCH_N_DEKADS = 18    # يغطي لحد منتصف سبتمبر تقريباً
+    ONSET_MIN_DEKAD_MM = 20
+    ONSET_CONFIRM_DEKADS = 2
+    ONSET_CONFIRM_MIN_MM = 20
+
+    def get_dekad_sums_for_year(year, aoi):
+        start = ee.Date.fromYMD(year, ONSET_SEARCH_START_MONTH, 1)
+        # لو السنة هي سنة الموسم الحالي وفيها قص YTD، نوقف البحث عند نفس نقطة القطع
+        # المصححة بدل ما نطلب بيانات لسه مانُشرتش.
+        if is_ytd and year == season_year:
+            cutoff = ee.Date.fromYMD(season_year, eff_end_month, eff_end_day)
+            n_days_avail = cutoff.difference(start, "day").max(0)
+            n_dekads = ee.Number(n_days_avail).divide(10).floor().min(ONSET_SEARCH_N_DEKADS)
+        else:
+            n_dekads = ee.Number(ONSET_SEARCH_N_DEKADS)
+        dekad_list = ee.List.sequence(0, n_dekads.subtract(1))
+
+        def one(i):
+            i = ee.Number(i)
+            d_start = start.advance(i.multiply(10), "day")
+            d_end = d_start.advance(10, "day")
+            val = (
+                CHIRPS.filterBounds(aoi).filterDate(d_start, d_end).sum()
+                .reduceRegion(reducer=ee.Reducer.mean(), geometry=aoi, scale=5000, maxPixels=1e9)
+                .get("precipitation")
+            )
+            return ee.Algorithms.If(val, val, 0)
+
+        return dekad_list.map(one)
+
+    def find_onset_dekad_index(dekad_sums):
+        """منطق كشف بداية الموسم يُنفَّذ في بايثون بعد سحب مجاميع العشاريات دفعة واحدة."""
+        n = len(dekad_sums)
+        for i in range(n - ONSET_CONFIRM_DEKADS):
+            if dekad_sums[i] >= ONSET_MIN_DEKAD_MM:
+                following = sum(dekad_sums[i + 1: i + 1 + ONSET_CONFIRM_DEKADS])
+                if following >= ONSET_CONFIRM_MIN_MM:
+                    return i
+        return None
+
+    # نسحب مجاميع العشاريات لكل السنوات (الحالية + التاريخية) في استدعاء واحد فقط لتقليل
+    # عدد الرحلات بين الخادم و Earth Engine.
+    onset_years = list(range(RAIN_HIST_START_YEAR, season_year + 1))
+    onset_years_ee = ee.List(onset_years)
+    onset_matrix_ee = onset_years_ee.map(lambda y: get_dekad_sums_for_year(ee.Number(y), AOI))
+    onset_matrix = onset_matrix_ee.getInfo()  # [[dekad_sums لكل سنة], ...]
+
+    onset_indices = {y: find_onset_dekad_index(sums) for y, sums in zip(onset_years, onset_matrix)}
+    current_onset_idx = onset_indices.get(season_year)
+    hist_onset_idxs = [v for k, v in onset_indices.items() if k != season_year and v is not None]
+    mean_hist_onset_idx = round(sum(hist_onset_idxs) / len(hist_onset_idxs)) if hist_onset_idxs else None
+
+    def dekad_idx_to_date(idx, year):
+        base = datetime.date(year, ONSET_SEARCH_START_MONTH, 1)
+        return base + datetime.timedelta(days=idx * 10)
+
+    onset_date_current = dekad_idx_to_date(current_onset_idx, season_year) if current_onset_idx is not None else None
+    onset_date_typical = (
+        dekad_idx_to_date(mean_hist_onset_idx, season_year) if mean_hist_onset_idx is not None else None
+    )
+    onset_anomaly_days = (
+        (onset_date_current - onset_date_typical).days
+        if (onset_date_current and onset_date_typical) else None
+    )
+
+    # ---------------- نافذة الإزهار (أكثر مراحل النمو حساسية للجفاف) ----------------
+    # مبنية على أطوال مراحل نمو الذرة الرفيعة القياسية بجداول FAO-56 (ابتدائي 20 يوم +
+    # نمو خضري 35 يوم = بداية الإزهار/منتصف الموسم عند يوم 55 من الزراعة، ومدة الإزهار
+    # وامتلاء أول الحبوب 40 يوم إضافي). تاريخ "الزراعة" هنا = تاريخ بداية الموسم المُكتشف
+    # ديناميكياً، مش تاريخ ثابت مفروض.
+    FLOWERING_START_OFFSET_DAYS = 55
+    FLOWERING_END_OFFSET_DAYS = 95
+
+    flowering_window = None
+    flowering_rain_anomaly_pct = None
+    if onset_date_current is not None:
+        flow_start = onset_date_current + datetime.timedelta(days=FLOWERING_START_OFFSET_DAYS)
+        flow_end = onset_date_current + datetime.timedelta(days=FLOWERING_END_OFFSET_DAYS)
+        # حد أقصى: منتحاوزش نقطة القطع المتاحة فعلياً من البيانات
+        data_cutoff = (
+            datetime.date(season_year, eff_end_month, eff_end_day) if is_ytd
+            else datetime.date(season_year, end_month, 28)
+        )
+        if flow_start <= data_cutoff:
+            flow_end_clamped = min(flow_end, data_cutoff)
+            flow_start_ee = ee.Date.fromYMD(flow_start.year, flow_start.month, flow_start.day)
+            flow_end_ee = ee.Date.fromYMD(flow_end_clamped.year, flow_end_clamped.month, flow_end_clamped.day)
+
+            flowering_rain_current = (
+                CHIRPS.filterBounds(AOI).filterDate(flow_start_ee, flow_end_ee).sum()
+                .reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=5000, maxPixels=1e9)
+                .get("precipitation")
+            )
+
+            def hist_flowering_sum(y):
+                y = ee.Number(y)
+                s = ee.Date.fromYMD(y, flow_start.month, flow_start.day)
+                e = ee.Date.fromYMD(y, flow_end_clamped.month, flow_end_clamped.day)
+                return CHIRPS.filterBounds(AOI).filterDate(s, e).sum().set("year", y)
+
+            hist_years_list = ee.List.sequence(RAIN_HIST_START_YEAR, RAIN_HIST_END_YEAR)
+            hist_flowering_col = ee.ImageCollection.fromImages(hist_years_list.map(hist_flowering_sum))
+            flowering_rain_hist_mean = (
+                hist_flowering_col.mean()
+                .reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=5000, maxPixels=1e9)
+                .get("precipitation")
+            )
+
+            vals = ee.Dictionary({
+                "current": flowering_rain_current, "hist": flowering_rain_hist_mean
+            }).getInfo()
+            cur_v, hist_v = vals.get("current"), vals.get("hist")
+            if cur_v is not None and hist_v not in (None, 0):
+                flowering_rain_anomaly_pct = round((cur_v - hist_v) / abs(hist_v) * 100, 1)
+            flowering_window = [flow_start.isoformat(), flow_end.isoformat()]
+
     # ---------------- MODIS LAI ----------------
     def get_modis_lai(start_date, end_date, aoi):
         col = ee.ImageCollection("MODIS/061/MOD15A2H").filterBounds(aoi).filterDate(start_date, end_date)
@@ -539,4 +661,16 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
         },
         "localities": localities,
         "ndvi_timeseries": ndvi_timeseries,
+        "phenology": {
+            "onset_date": onset_date_current.isoformat() if onset_date_current else None,
+            "typical_onset_date": onset_date_typical.isoformat() if onset_date_typical else None,
+            "onset_anomaly_days": onset_anomaly_days,
+            "flowering_window": flowering_window,
+            "flowering_rainfall_anomaly_pct": flowering_rain_anomaly_pct,
+            "note": (
+                "تاريخ بداية الموسم مُكتشف ديناميكياً من بيانات الأمطار الفعلية "
+                "(3 عشاريات متتالية بأمطار كافية)، ونافذة الإزهار مُشتقة منه حسب "
+                "أطوال مراحل نمو الذرة الرفيعة القياسية (FAO-56)."
+            ),
+        },
     }
