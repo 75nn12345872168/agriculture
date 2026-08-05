@@ -243,6 +243,12 @@
       </div>
     </section>
 
+    <div class="section-title"><h2>🌱 التقويم الزراعي المُكتشف ديناميكياً</h2><div class="rule"></div></div>
+    <div class="card" id="phenologyCard">
+      <div class="stat-grid" id="phenologyGrid"></div>
+      <p id="phenologyNote" style="font-size:0.78rem; color:var(--ink-soft); margin:12px 0 0; line-height:1.8;"></p>
+    </div>
+
     <div class="section-title"><h2>🗺️ الخريطة التفاعلية</h2><div class="rule"></div></div>
     <div class="card map-card">
       <div id="map"></div>
@@ -388,6 +394,9 @@ function render(data){
   // --- NDVI chart ---
   buildNdviChart(data.ndvi_timeseries, data.meta.season_year);
 
+  // --- Phenology (dynamic onset + flowering window) ---
+  renderPhenology(data.phenology);
+
   // --- Table ---
   const tbody = document.getElementById('localityTbody');
   tbody.innerHTML = '';
@@ -402,6 +411,45 @@ function render(data){
     `;
     tbody.appendChild(tr);
   });
+}
+
+function renderPhenology(ph){
+  const grid = document.getElementById('phenologyGrid');
+  const note = document.getElementById('phenologyNote');
+  if (!ph || !ph.onset_date){
+    grid.innerHTML = `<div class="stat"><span class="k">بداية الموسم</span><span class="v">لم يُكتشف بعد لهذا الموسم</span></div>`;
+    note.textContent = '';
+    return;
+  }
+  const anomEl = (val, suffix) => {
+    if (val == null) return '<span class="v">—</span>';
+    const cls = val < 0 ? 'neg' : 'pos';
+    const sign = val > 0 ? '+' : '';
+    return `<span class="v mono ${cls}">${sign}${val}${suffix}</span>`;
+  };
+  grid.innerHTML = `
+    <div class="stat">
+      <span class="k">بداية الموسم المُكتشفة (أول أمطار مستقرة)</span>
+      <span class="v mono">${ph.onset_date}</span>
+    </div>
+    <div class="stat">
+      <span class="k">البداية المعتادة تاريخياً</span>
+      <span class="v mono">${ph.typical_onset_date ?? '—'}</span>
+    </div>
+    <div class="stat">
+      <span class="k">فرق التوقيت عن المعتاد</span>
+      ${anomEl(ph.onset_anomaly_days, ' يوم')}
+    </div>
+    <div class="stat">
+      <span class="k">انحراف أمطار نافذة الإزهار (الأكثر حساسية)</span>
+      ${anomEl(ph.flowering_rainfall_anomaly_pct, '%')}
+    </div>
+  `;
+  if (ph.flowering_window){
+    note.textContent = `نافذة الإزهار المُقدَّرة: ${ph.flowering_window[0]} → ${ph.flowering_window[1]}. ${ph.note}`;
+  } else {
+    note.textContent = ph.note || '';
+  }
 }
 
 function setLayer(key){
