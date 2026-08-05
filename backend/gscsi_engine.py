@@ -281,25 +281,15 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     ONSET_CONFIRM_DEKADS = 2
     ONSET_CONFIRM_MIN_MM = 20
 
-    # مصدر سريع شبه لحظي (تأخير يوم واحد تقريباً، مبني على IMERG) — يُستخدم حصرياً لكشف
-    # بداية الموسم للسنة الحالية فقط، عشان النتيجة تتحدّث فور توفر مطر فعلي بدل انتظار
-    # نشر CHIRPS النهائي (اللي بيتأخر شهر-شهرين). باقي حسابات التطبيق (GSCSI، الأمطار
-    # الرئيسية، المقارنات التاريخية) لسه بتستخدم CHIRPS النهائي المُتحقَّق منه بدون أي
-    # تغيير، حفاظاً على الدقة اللي تطابقت مع المرجع.
-    CHIRPS_FAST = ee.ImageCollection("UCSB-CHC/CHIRPS/V3/DAILY_SAT").select([0], ["precipitation"])
-
+    # ملاحظة هندسية: جُرِّب مصدر "شبه لحظي" بديل (CHIRPS v3) لكشف بداية الموسم بسرعة أكبر،
+    # لكن تبيّن من التوثيق الرسمي إن تغطيته الفعلية بتوقف مبكراً (لا تصل لموسم 2026 كاملاً)،
+    # فبيرجع نتائج فاضية بدل بيانات حقيقية. تراجعنا عنه والتزمنا بـ CHIRPS النهائي فقط —
+    # أبطأ في النشر، لكنه المصدر الوحيد المُتحقَّق من دقته فعلياً في هذا التطبيق.
     def get_dekad_sums_for_year(year, aoi):
         start = ee.Date.fromYMD(year, ONSET_SEARCH_START_MONTH, 1)
-        use_fast_source = is_ytd and (year == season_year)
-        source = CHIRPS_FAST if use_fast_source else CHIRPS
+        source = CHIRPS
 
-        if use_fast_source:
-            # المصدر السريع شبه محدَّث لحظياً، فنقص عند "اليوم" الفعلي مباشرة بدل نقطة
-            # قطع CHIRPS النهائي المتأخرة.
-            cutoff = ee.Date.fromYMD(_today.year, _today.month, _today.day)
-            n_days_avail = cutoff.difference(start, "day").max(0)
-            n_dekads = ee.Number(n_days_avail).divide(10).floor().min(ONSET_SEARCH_N_DEKADS)
-        elif is_ytd and year == season_year:
+        if is_ytd and year == season_year:
             cutoff = ee.Date.fromYMD(season_year, eff_end_month, eff_end_day)
             n_days_avail = cutoff.difference(start, "day").max(0)
             n_dekads = ee.Number(n_days_avail).divide(10).floor().min(ONSET_SEARCH_N_DEKADS)
@@ -371,12 +361,15 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
         flow_end = onset_date_current + datetime.timedelta(days=FLOWERING_END_OFFSET_DAYS)
         # حد أقصى: المصدر السريع شبه لحظي، فنقص عند "اليوم" الفعلي بدل نقطة قطع
         # CHIRPS النهائي المتأخرة — لكن فقط للموسم الحالي الجاري (YTD).
-        data_cutoff = _today if is_ytd else datetime.date(season_year, end_month, 28)
+        data_cutoff = (
+            datetime.date(season_year, eff_end_month, eff_end_day) if is_ytd
+            else datetime.date(season_year, end_month, 28)
+        )
         if flow_start <= data_cutoff and (min(flow_end, data_cutoff) - flow_start).days >= 3:
             flow_end_clamped = min(flow_end, data_cutoff)
             flow_start_ee = ee.Date.fromYMD(flow_start.year, flow_start.month, flow_start.day)
             flow_end_ee = ee.Date.fromYMD(flow_end_clamped.year, flow_end_clamped.month, flow_end_clamped.day)
-            flowering_current_source = CHIRPS_FAST if is_ytd else CHIRPS
+            flowering_current_source = CHIRPS
 
             flowering_rain_current = (
                 flowering_current_source.filterBounds(AOI).filterDate(flow_start_ee, flow_end_ee).sum()
@@ -681,15 +674,15 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             "onset_anomaly_days": onset_anomaly_days,
             "flowering_window": flowering_window,
             "flowering_rainfall_anomaly_pct": flowering_rain_anomaly_pct,
-            "fast_source_used": bool(is_ytd),
-            "fast_source_name": "CHIRPS v3 (IMERG, شبه لحظي)" if is_ytd else None,
+            "data_cutoff_date": (
+                f"{season_year:04d}-{eff_end_month:02d}-{eff_end_day:02d}" if is_ytd else None
+            ),
             "note": (
                 "تاريخ بداية الموسم مُكتشف ديناميكياً من بيانات الأمطار الفعلية "
                 "(3 عشاريات متتالية بأمطار كافية)، ونافذة الإزهار مُشتقة منه حسب "
-                "أطوال مراحل نمو الذرة الرفيعة القياسية (FAO-56). ملاحظة: هذه البطاقة "
-                "فقط تستخدم مصدر بيانات أمطار سريع شبه لحظي (تأخير ~يوم واحد) لرصد "
-                "الموسم الجاري فور حدوثه؛ باقي أرقام اللوحة (GSCSI، الأمطار، الخريطة) "
-                "تعتمد على CHIRPS النهائي الأدق للحفاظ على التطابق مع القيم المرجعية."
+                "أطوال مراحل نمو الذرة الرفيعة القياسية (FAO-56). البيانات من CHIRPS "
+                "النهائي (الأدق والمُتحقَّق من مطابقته للقيم المرجعية)، فقد تظهر بداية "
+                "الموسم متأخرة عن الواقع الفعلي بسبب فجوة نشر البيانات المعتادة."
             ),
         },
     }
