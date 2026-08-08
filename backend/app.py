@@ -190,6 +190,72 @@ def get_loyo_validation_status():
     })
 
 
+@app.route("/api/validation/sensitivity/start", methods=["GET"])
+def start_sensitivity_analysis():
+    """
+    يبدأ تحليل حساسية الأوزان في الخلفية (نفس نمط LOYO start/status).
+    يختبر صيغ أوزان بديلة مُحدَّدة مسبقاً (WEIGHT_VARIANTS في gscsi_engine.py)
+    مقابل بيانات الغلة الفعلية.
+    """
+    crop = request.args.get("crop", "sorghum")
+    default_sector = "mechanized_rainfed" if crop == "sesame" else "semi_mechanized"
+    sector = request.args.get("sector", default_sector)
+    key = ("sensitivity", crop, sector)
+
+    with _LOYO_JOBS_LOCK:
+        existing = _LOYO_JOBS.get(key)
+        if existing and existing["status"] == "running":
+            return jsonify({
+                "status": "already_running",
+                "poll_url": f"/api/validation/sensitivity/status?crop={crop}&sector={sector}",
+            })
+        if existing and existing["status"] == "done":
+            age = time.time() - existing["finished_at"]
+            if age < _CACHE_TTL_SECONDS:
+                return jsonify({"status": "done", "cached": True, "result": existing["result"]})
+        _LOYO_JOBS[key] = {"status": "running", "result": None, "error": None, "started_at": time.time()}
+
+    def _run():
+        try:
+            result = gscsi_engine.run_weight_sensitivity_analysis(crop=crop, sector=sector)
+            with _LOYO_JOBS_LOCK:
+                _LOYO_JOBS[key] = {"status": "done", "result": result, "error": None, "finished_at": time.time()}
+        except Exception as e:
+            logger.error("Sensitivity job failed: %s\n%s", e, traceback.format_exc())
+            with _LOYO_JOBS_LOCK:
+                _LOYO_JOBS[key] = {"status": "error", "result": None, "error": str(e), "finished_at": time.time()}
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({
+        "status": "started",
+        "message": "بدأ تحليل الحساسية في الخلفية. قد يأخذ 3-7 دقائق.",
+        "poll_url": f"/api/validation/sensitivity/status?crop={crop}&sector={sector}",
+        "crop": crop, "sector": sector,
+    })
+
+
+@app.route("/api/validation/sensitivity/status", methods=["GET"])
+def get_sensitivity_status():
+    crop = request.args.get("crop", "sorghum")
+    default_sector = "mechanized_rainfed" if crop == "sesame" else "semi_mechanized"
+    sector = request.args.get("sector", default_sector)
+    key = ("sensitivity", crop, sector)
+
+    with _LOYO_JOBS_LOCK:
+        job = _LOYO_JOBS.get(key)
+
+    if job is None:
+        return jsonify({
+            "status": "not_started",
+            "start_url": f"/api/validation/sensitivity/start?crop={crop}&sector={sector}",
+        })
+    if job["status"] == "running":
+        return jsonify({"status": "running", "elapsed_seconds": round(time.time() - job["started_at"], 1)})
+    if job["status"] == "error":
+        return jsonify({"status": "error", "error": job["error"]}), 500
+    return jsonify({"status": "done", "result": job["result"]})
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
