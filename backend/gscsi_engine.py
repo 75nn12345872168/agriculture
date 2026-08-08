@@ -686,3 +686,169 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             ),
         },
     }
+
+
+# ==========================================================================
+# Leave-One-Year-Out (LOYO) Validation
+# ==========================================================================
+# يقارن متوسط GSCSI السنوي (state-level) على مستوى ولاية القضارف بغلة محصول
+# فعلية موثقة من تقارير FAO CFSAM (ground truth). بديل واقعي لـ Leave-One-Out
+# على مستوى المحلية، لأن بيانات الغلة الرسمية المتاحة هي على مستوى الولاية
+# سنوياً فقط. راجع backend/data/gedaref_ground_truth_yields.json لإضافة سنوات.
+#
+# تنبيه منهجي: مع أقل من ~6-8 سنوات مستقلة، نتائج LOYO مؤشر استكشافي أولي
+# فقط وليست تحققاً إحصائياً موثوقاً. الـ endpoint يُرجع تحذيراً صريحاً بهذا
+# الخصوص عندما يكون عدد السنوات المتاحة أقل من هذا الحد.
+
+def _ground_truth_path():
+    return os.path.join(os.path.dirname(__file__), "data", "gedaref_ground_truth_yields.json")
+
+
+def _load_ground_truth(crop: str, sector: str):
+    path = _ground_truth_path()
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    records = [
+        r for r in data.get("records", [])
+        if r.get("crop") == crop
+        and r.get("sector") == sector
+        and r.get("yield_t_ha") is not None
+    ]
+    records.sort(key=lambda r: r["season_year"])
+    return records
+
+
+def _fit_linear(xs, ys):
+    """انحدار خطي بسيط (least squares) بدون مكتبات خارجية إضافية."""
+    n = len(xs)
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    var_x = sum((x - mean_x) ** 2 for x in xs)
+    if var_x == 0:
+        slope = 0.0
+    else:
+        slope = cov / var_x
+    intercept = mean_y - slope * mean_x
+    return slope, intercept
+
+
+def _pearson_r(xs, ys):
+    n = len(xs)
+    if n < 2:
+        return None
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    var_x = sum((x - mean_x) ** 2 for x in xs)
+    var_y = sum((y - mean_y) ** 2 for y in ys)
+    denom = (var_x * var_y) ** 0.5
+    if denom == 0:
+        return None
+    return cov / denom
+
+
+def run_loyo_validation(crop: str = "sorghum", sector: str = "semi_mechanized",
+                         start_month: int = 6, end_month: int = 10):
+    """
+    يحسب متوسط GSCSI السنوي (state-level) لكل سنة عندها غلة موثقة، ثم يُجري
+    Leave-One-Year-Out على انحدار خطي بسيط (GSCSI -> yield) لقياس القدرة
+    التنبؤية الأولية للمؤشر مقابل بيانات إنتاج حقيقية.
+    """
+    ground_truth = _load_ground_truth(crop, sector)
+    n = len(ground_truth)
+
+    MIN_YEARS_FOR_MEANINGFUL_LOYO = 6
+
+    if n < 3:
+        return {
+            "error": "بيانات غير كافية لإجراء LOYO",
+            "crop": crop,
+            "sector": sector,
+            "n_years_available": n,
+            "min_years_required": 3,
+            "note": "أضف سنوات إضافية إلى gedaref_ground_truth_yields.json",
+        }
+
+    # نحسب (أو نسترجع من الكاش الموجود في app.py عبر run_pipeline) متوسط GSCSI لكل سنة
+    points = []
+    for record in ground_truth:
+        year = record["season_year"]
+        pipeline_result = run_pipeline(year, start_month, end_month)
+        gscsi_mean = pipeline_result["summary"]["gscsi_mean"]
+        if gscsi_mean is None:
+            continue
+        points.append({
+            "season_year": year,
+            "gscsi_mean": gscsi_mean,
+            "actual_yield_t_ha": record["yield_t_ha"],
+            "source_report": record.get("source_report"),
+        })
+
+    n_valid = len(points)
+    if n_valid < 3:
+        return {
+            "error": "تعذر حساب GSCSI لعدد كافٍ من السنوات (فشل استعلامات GEE على الأرجح)",
+            "crop": crop,
+            "sector": sector,
+            "n_years_available": n,
+            "n_years_with_valid_gscsi": n_valid,
+        }
+
+    xs_all = [p["gscsi_mean"] for p in points]
+    ys_all = [p["actual_yield_t_ha"] for p in points]
+
+    # ---------------- Leave-One-Year-Out ----------------
+    loyo_results = []
+    for i in range(n_valid):
+        train_points = points[:i] + points[i + 1:]
+        test_point = points[i]
+        xs_train = [p["gscsi_mean"] for p in train_points]
+        ys_train = [p["actual_yield_t_ha"] for p in train_points]
+        slope, intercept = _fit_linear(xs_train, ys_train)
+        predicted = slope * test_point["gscsi_mean"] + intercept
+        error = predicted - test_point["actual_yield_t_ha"]
+        loyo_results.append({
+            "season_year": test_point["season_year"],
+            "gscsi_mean": test_point["gscsi_mean"],
+            "actual_yield_t_ha": test_point["actual_yield_t_ha"],
+            "predicted_yield_t_ha": round(predicted, 3),
+            "error_t_ha": round(error, 3),
+        })
+
+    errors = [r["error_t_ha"] for r in loyo_results]
+    mae = sum(abs(e) for e in errors) / len(errors)
+    rmse = (sum(e ** 2 for e in errors) / len(errors)) ** 0.5
+
+    # R^2 لعينة LOYO الكاملة (predicted من كل fold مقابل actual)
+    actual_mean = sum(ys_all) / len(ys_all)
+    ss_tot = sum((y - actual_mean) ** 2 for y in ys_all)
+    ss_res = sum(e ** 2 for e in errors)
+    r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else None
+
+    pearson_full_sample = _pearson_r(xs_all, ys_all)
+
+    warnings = []
+    if n_valid < MIN_YEARS_FOR_MEANINGFUL_LOYO:
+        warnings.append(
+            f"عدد السنوات المتاحة ({n_valid}) أقل من الحد الأدنى المقترح "
+            f"({MIN_YEARS_FOR_MEANINGFUL_LOYO}) لتحقق إحصائي موثوق. اعتبر هذه "
+            "النتائج مؤشراً استكشافياً أولياً فقط، وليست تأكيداً نهائياً لدقة النموذج."
+        )
+
+    return {
+        "crop": crop,
+        "sector": sector,
+        "n_years_available": n,
+        "n_years_used": n_valid,
+        "min_years_for_reliable_loyo": MIN_YEARS_FOR_MEANINGFUL_LOYO,
+        "per_year_results": loyo_results,
+        "metrics": {
+            "mae_t_ha": round(mae, 3),
+            "rmse_t_ha": round(rmse, 3),
+            "r_squared_loyo": round(r_squared, 3) if r_squared is not None else None,
+            "pearson_r_full_sample": round(pearson_full_sample, 3) if pearson_full_sample is not None else None,
+        },
+        "warnings": warnings,
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
