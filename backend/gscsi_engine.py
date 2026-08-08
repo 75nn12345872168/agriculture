@@ -616,6 +616,17 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     if gscsi_mean_val is None:
         gscsi_mean_val = region_mean(GSCSI, "GSCSI", mask=False)
     gscsi_mean = round(gscsi_mean_val, 1) if gscsi_mean_val is not None else None
+
+    # ---------------- متوسط كل مؤشر فرعي على حدة (لتحليل حساسية الأوزان لاحقاً) ----------------
+    # نحسبها هنا مرة واحدة فقط أثناء استدعاء GEE الأصلي، بحيث يمكن لاحقاً إعادة حساب GSCSI
+    # بأوزان بديلة محلياً في بايثون بدون أي استدعاءات GEE إضافية (سريع ومجاني).
+    component_scores = {}
+    for band_name in GSCSI_WEIGHTS.keys():
+        val = region_mean(score_bands, band_name, mask=True)
+        if val is None:
+            val = region_mean(score_bands, band_name, mask=False)
+        component_scores[band_name] = round(val, 2) if val is not None else None
+
     if gscsi_mean is None:
         gscsi_class_label = "غير متوفر"
     elif gscsi_mean >= 90:
@@ -658,6 +669,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             "gscsi_class_label": gscsi_class_label,
             "rain_season_mm": round(rain_mean_val, 1) if rain_mean_val is not None else None,
             "rainfall_anomaly_pct": round(rain_anom_val, 1) if rain_anom_val is not None else None,
+            "component_scores": component_scores,
         },
         "map": {
             "center": [centroid[1], centroid[0]],
@@ -850,5 +862,99 @@ def run_loyo_validation(crop: str = "sorghum", sector: str = "semi_mechanized",
             "pearson_r_full_sample": round(pearson_full_sample, 3) if pearson_full_sample is not None else None,
         },
         "warnings": warnings,
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+
+
+# ==========================================================================
+# تحليل حساسية الأوزان (Weight Sensitivity Analysis)
+# ==========================================================================
+# فرضيات بديلة مُحدَّدة مسبقاً (قبل رؤية أي نتيجة) لتفادي "التنقيب بعد الحدث"
+# (post-hoc cherry-picking). كل فرضية هنا مبنية على ملاحظة من تقارير FAO: توزيع
+# الأمطار الزمني (فترات الجفاف الحرجة) أهم من المجموع الكلي في تحديد الغلة.
+
+WEIGHT_VARIANTS = {
+    "baseline": {
+        "NDVI_Anomaly_Score": 0.17, "Rainfall_Anomaly_Score": 0.17, "VHI_Score": 0.15,
+        "SPEI_Score": 0.10, "SoilMoisture_Score": 0.10, "LST_Score": 0.13,
+        "NDMI_Score": 0.04, "LAI_Score": 0.04, "Dry_Spell_Score": 0.10,
+    },
+    "dry_spell_boost": {
+        "NDVI_Anomaly_Score": 0.14, "Rainfall_Anomaly_Score": 0.12, "VHI_Score": 0.13,
+        "SPEI_Score": 0.08, "SoilMoisture_Score": 0.08, "LST_Score": 0.11,
+        "NDMI_Score": 0.04, "LAI_Score": 0.05, "Dry_Spell_Score": 0.25,
+    },
+    "dry_spell_dominant": {
+        "NDVI_Anomaly_Score": 0.10, "Rainfall_Anomaly_Score": 0.08, "VHI_Score": 0.10,
+        "SPEI_Score": 0.07, "SoilMoisture_Score": 0.07, "LST_Score": 0.10,
+        "NDMI_Score": 0.03, "LAI_Score": 0.10, "Dry_Spell_Score": 0.35,
+    },
+}
+
+
+def run_weight_sensitivity_analysis(crop: str = "sorghum", sector: str = "semi_mechanized",
+                                     start_month: int = 6, end_month: int = 10):
+    """
+    يحسب GSCSI بأوزان بديلة (WEIGHT_VARIANTS) باستخدام نفس بيانات المؤشرات
+    الفرعية المستخرجة أصلاً من GEE (استدعاء واحد لكل سنة فقط)، ويقارن معامل
+    ارتباط بيرسون (على العينة الكاملة، وليس LOYO لأن هذا تحليل استكشافي أولي
+    وليس تحققاً تنبؤياً نهائياً) بين كل صيغة أوزان والغلة الفعلية.
+    """
+    ground_truth = _load_ground_truth(crop, sector)
+    n = len(ground_truth)
+    if n < 3:
+        return {"error": "بيانات غير كافية", "n_years_available": n}
+
+    per_year_components = []
+    for record in ground_truth:
+        year = record["season_year"]
+        pipeline_result = run_pipeline(year, start_month, end_month)
+        components = pipeline_result["summary"].get("component_scores", {})
+        if not components or any(v is None for v in components.values()):
+            continue
+        per_year_components.append({
+            "season_year": year,
+            "actual_yield_t_ha": record["yield_t_ha"],
+            "components": components,
+        })
+
+    n_valid = len(per_year_components)
+    if n_valid < 3:
+        return {"error": "تعذر حساب المؤشرات الفرعية لعدد كافٍ من السنوات",
+                "n_years_available": n, "n_years_with_valid_components": n_valid}
+
+    variant_results = {}
+    for variant_name, weights in WEIGHT_VARIANTS.items():
+        gscsi_values, yield_values, per_year = [], [], []
+        for entry in per_year_components:
+            weighted_gscsi = sum(
+                entry["components"].get(band, 0) * w for band, w in weights.items()
+            )
+            gscsi_values.append(weighted_gscsi)
+            yield_values.append(entry["actual_yield_t_ha"])
+            per_year.append({
+                "season_year": entry["season_year"],
+                "weighted_gscsi": round(weighted_gscsi, 2),
+                "actual_yield_t_ha": entry["actual_yield_t_ha"],
+            })
+        r = _pearson_r(gscsi_values, yield_values)
+        variant_results[variant_name] = {
+            "weights": weights,
+            "pearson_r": round(r, 3) if r is not None else None,
+            "per_year": per_year,
+        }
+
+    return {
+        "crop": crop,
+        "sector": sector,
+        "n_years_used": n_valid,
+        "min_years_for_reliable_analysis": 6,
+        "warning": (
+            None if n_valid >= 6 else
+            f"عدد السنوات ({n_valid}) أقل من الحد الأدنى الموصى به (6) — "
+            "هذا تحليل استكشافي أولي فقط."
+        ),
+        "variants_tested_predefined_before_seeing_results": list(WEIGHT_VARIANTS.keys()),
+        "results": variant_results,
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
     }
