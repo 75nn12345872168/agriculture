@@ -1,0 +1,142 @@
+{
+  "_readme": "بيانات مرجعية (Ground Truth) لغلة المحاصيل في ولاية القضارف، مستخرجة يدوياً من تقارير FAO CFSAM السنوية. لإضافة سنة جديدة: أضف عنصر جديد لمصفوفة 'records' بنفس البنية. الحقول التي لا تتوفر تترك null.",
+  "source": "FAO Crop and Food Supply Assessment Mission (CFSAM) — Special Reports, Sudan",
+  "unit_yield": "tonnes/hectare",
+  "records": [
+    {
+      "season_year": 2018,
+      "crop": "sesame",
+      "sector": "mechanized_rainfed",
+      "area_harvested_ha": 451000,
+      "production_tonnes": 145000,
+      "yield_t_ha": 0.32,
+      "source_report": "FAO_CFSAM_2019_report"
+    },
+    {
+      "season_year": 2019,
+      "crop": "sesame",
+      "sector": "mechanized_rainfed",
+      "area_harvested_ha": 457000,
+      "production_tonnes": 98000,
+      "yield_t_ha": 0.21,
+      "source_report": "FAO_CFSAM_2019_report"
+    },
+    {
+      "season_year": 2021,
+      "crop": "sesame",
+      "sector": "mechanized_rainfed",
+      "area_harvested_ha": 873000,
+      "production_tonnes": 120000,
+      "yield_t_ha": 0.14,
+      "source_report": "FAO_CFSAM_2021_report_NOTE_unusually_low_gall_midge_year"
+    },
+    {
+      "season_year": 2022,
+      "crop": "sesame",
+      "sector": "mechanized_rainfed",
+      "area_harvested_ha": 254100,
+      "production_tonnes": 95600,
+      "yield_t_ha": 0.38,
+      "source_report": "FAO_CFSAM_2023_report"
+    },
+    {
+      "season_year": 2023,
+      "crop": "sesame",
+      "sector": "mechanized_rainfed",
+      "area_harvested_ha": 357400,
+      "production_tonnes": 144700,
+      "yield_t_ha": 0.4,
+      "source_report": "FAO_CFSAM_2023_report"
+    },
+    {
+      "season_year": 2024,
+      "crop": "sesame",
+      "sector": "mechanized_rainfed",
+      "area_harvested_ha": 327600,
+      "production_tonnes": 89700,
+      "yield_t_ha": 0.27,
+      "source_report": "FAO_CFSAM_2024_report"
+    },
+    {
+      "season_year": 2025,
+      "crop": "sesame",
+      "sector": "mechanized_rainfed",
+      "area_harvested_ha": 231200,
+      "production_tonnes": 94100,
+      "yield_t_ha": 0.41,
+      "source_report": "FAO_CFSAM_2025_report"
+    },
+    {
+      "season_year": 2018,
+      "crop": "sorghum",
+      "sector": "semi_mechanized",
+      "area_harvested_ha": 1806000,
+      "production_tonnes": 1019000,
+      "yield_t_ha": 0.56,
+      "source_report": "FAO_CFSAM_2019_report"
+    },
+    {
+      "season_year": 2019,
+      "crop": "sorghum",
+      "sector": "semi_mechanized",
+      "area_harvested_ha": 1105000,
+      "production_tonnes": 408000,
+      "yield_t_ha": 0.37,
+      "source_report": "FAO_CFSAM_2019_report"
+    },
+    {
+      "season_year": 2020,
+      "crop": "sorghum",
+      "sector": "semi_mechanized",
+      "area_harvested_ha": 1517000,
+      "production_tonnes": 766000,
+      "yield_t_ha": 0.6,
+      "source_report": "FAO_CFSAM_2021_report_NOTE_internal_FAO_table_inconsistency_yield0.60_vs_calc0.50"
+    },
+    {
+      "season_year": 2021,
+      "crop": "sorghum",
+      "sector": "semi_mechanized",
+      "area_harvested_ha": 1838000,
+      "production_tonnes": 914000,
+      "yield_t_ha": 0.48,
+      "source_report": "FAO_CFSAM_2021_report"
+    },
+    {
+      "season_year": 2022,
+      "crop": "sorghum",
+      "sector": "semi_mechanized",
+      "area_harvested_ha": 1323000,
+      "production_tonnes": 567000,
+      "yield_t_ha": 0.43,
+      "source_report": "FAO_CFSAM_2023_report"
+    },
+    {
+      "season_year": 2023,
+      "crop": "sorghum",
+      "sector": "semi_mechanized",
+      "area_harvested_ha": 1620360,
+      "production_tonnes": 752310,
+      "yield_t_ha": 0.46,
+      "source_report": "FAO_CFSAM_2023_report"
+    },
+    {
+      "season_year": 2024,
+      "crop": "sorghum",
+      "sector": "semi_mechanized",
+      "area_harvested_ha": 2079000,
+      "production_tonnes": 866250,
+      "yield_t_ha": 0.42,
+      "source_report": "FAO_CFSAM_2024_report"
+    },
+    {
+      "season_year": 2025,
+      "crop": "sorghum",
+      "sector": "semi_mechanized",
+      "area_harvested_ha": null,
+      "production_tonnes": 685800,
+      "yield_t_ha": null,
+      "source_report": "FAO_CFSAM_2025_report_INCOMPLETE_yield_not_confirmed"
+    }
+  ]
+}
