@@ -62,6 +62,41 @@ def get_gscsi():
         return jsonify({"error": f"فشل حساب المؤشر: {str(e)}"}), 500
 
 
+@app.route("/api/validation/loyo", methods=["GET"])
+def get_loyo_validation():
+    """
+    Leave-One-Year-Out validation: يقارن متوسط GSCSI السنوي بغلة محصول فعلية
+    موثقة من تقارير FAO CFSAM لولاية القضارف.
+
+    Query params (اختيارية):
+      crop:   sorghum (افتراضي) | sesame
+      sector: semi_mechanized (افتراضي لو crop=sorghum) | mechanized_rainfed (افتراضي لو crop=sesame)
+
+    ملاحظة: هذا endpoint يستدعي run_pipeline لكل سنة متاحة في بيانات الغلة
+    المرجعية، لذا أول استدعاء قد يأخذ دقائق (كل سنة 20-60 ثانية على GEE).
+    الكاش الموجود أصلاً في _CACHE يقلل هذا التأخير في الاستدعاءات التالية
+    لنفس السنوات.
+    """
+    crop = request.args.get("crop", "sorghum")
+    default_sector = "mechanized_rainfed" if crop == "sesame" else "semi_mechanized"
+    sector = request.args.get("sector", default_sector)
+
+    cache_key = ("loyo", crop, sector)
+    cached = _CACHE.get(cache_key)
+    if cached and (time.time() - cached["ts"] < _CACHE_TTL_SECONDS):
+        logger.info("Cache hit for LOYO %s", cache_key)
+        return jsonify(cached["data"])
+
+    try:
+        logger.info("Computing LOYO validation for crop=%s sector=%s ...", crop, sector)
+        data = gscsi_engine.run_loyo_validation(crop=crop, sector=sector)
+        _CACHE[cache_key] = {"ts": time.time(), "data": data}
+        return jsonify(data)
+    except Exception as e:
+        logger.error("LOYO validation failed: %s\n%s", e, traceback.format_exc())
+        return jsonify({"error": f"فشل حساب التحقق: {str(e)}"}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
