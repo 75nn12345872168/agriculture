@@ -14,6 +14,7 @@ import os
 import time
 import logging
 import traceback
+import threading
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -62,39 +63,131 @@ def get_gscsi():
         return jsonify({"error": f"فشل حساب المؤشر: {str(e)}"}), 500
 
 
-@app.route("/api/validation/loyo", methods=["GET"])
-def get_loyo_validation():
+####################################################################
+# LOYO Validation — نمط "شغّل في الخلفية ثم استعلم" (Start/Poll)
+####################################################################
+# سبب هذا التصميم: حساب GSCSI لـ 7 سنوات عبر GEE بشكل متتابع قد يأخذ
+# 3-7 دقائق، وهو ما يتجاوز مهلة Gunicorn worker (--timeout) ويؤدي إلى
+# SystemExit وانهيار العامل قبل انتهاء الطلب. الحل: /start يشغّل الحساب
+# في thread منفصل ويرجع فوراً، و/status يُستعلم دورياً لمعرفة النتيجة.
+
+_LOYO_JOBS = {}          # key: (crop, sector) -> {"status", "result", "error", "started_at"}
+_LOYO_JOBS_LOCK = threading.Lock()
+
+
+def _loyo_job_key(crop, sector):
+    return (crop, sector)
+
+
+def _run_loyo_job_in_background(crop, sector):
+    key = _loyo_job_key(crop, sector)
+    try:
+        logger.info("LOYO background job started for %s", key)
+        result = gscsi_engine.run_loyo_validation(crop=crop, sector=sector)
+        with _LOYO_JOBS_LOCK:
+            _LOYO_JOBS[key] = {
+                "status": "done",
+                "result": result,
+                "error": None,
+                "finished_at": time.time(),
+            }
+        logger.info("LOYO background job finished for %s", key)
+    except Exception as e:
+        logger.error("LOYO background job failed for %s: %s\n%s", key, e, traceback.format_exc())
+        with _LOYO_JOBS_LOCK:
+            _LOYO_JOBS[key] = {
+                "status": "error",
+                "result": None,
+                "error": str(e),
+                "finished_at": time.time(),
+            }
+
+
+@app.route("/api/validation/loyo/start", methods=["GET"])
+def start_loyo_validation():
     """
-    Leave-One-Year-Out validation: يقارن متوسط GSCSI السنوي بغلة محصول فعلية
-    موثقة من تقارير FAO CFSAM لولاية القضارف.
+    يبدأ حساب LOYO في الخلفية ويرجع فوراً (لا ينتظر انتهاء الحساب).
+    Query params: crop (sorghum افتراضي | sesame), sector (اختياري)
 
-    Query params (اختيارية):
-      crop:   sorghum (افتراضي) | sesame
-      sector: semi_mechanized (افتراضي لو crop=sorghum) | mechanized_rainfed (افتراضي لو crop=sesame)
-
-    ملاحظة: هذا endpoint يستدعي run_pipeline لكل سنة متاحة في بيانات الغلة
-    المرجعية، لذا أول استدعاء قد يأخذ دقائق (كل سنة 20-60 ثانية على GEE).
-    الكاش الموجود أصلاً في _CACHE يقلل هذا التأخير في الاستدعاءات التالية
-    لنفس السنوات.
+    استدعِ /api/validation/loyo/status بنفس الـ crop/sector للمتابعة.
     """
     crop = request.args.get("crop", "sorghum")
     default_sector = "mechanized_rainfed" if crop == "sesame" else "semi_mechanized"
     sector = request.args.get("sector", default_sector)
+    key = _loyo_job_key(crop, sector)
 
-    cache_key = ("loyo", crop, sector)
-    cached = _CACHE.get(cache_key)
-    if cached and (time.time() - cached["ts"] < _CACHE_TTL_SECONDS):
-        logger.info("Cache hit for LOYO %s", cache_key)
-        return jsonify(cached["data"])
+    with _LOYO_JOBS_LOCK:
+        existing = _LOYO_JOBS.get(key)
+        if existing and existing["status"] == "running":
+            return jsonify({
+                "status": "already_running",
+                "message": "الحساب شغال بالفعل، استخدم /status للمتابعة",
+                "poll_url": f"/api/validation/loyo/status?crop={crop}&sector={sector}",
+            })
+        if existing and existing["status"] == "done":
+            # لو النتيجة محسوبة ومخزنة أصلاً ولسه ضمن مدة الكاش، نرجعها فورًا
+            age = time.time() - existing["finished_at"]
+            if age < _CACHE_TTL_SECONDS:
+                return jsonify({
+                    "status": "done",
+                    "cached": True,
+                    "result": existing["result"],
+                })
 
-    try:
-        logger.info("Computing LOYO validation for crop=%s sector=%s ...", crop, sector)
-        data = gscsi_engine.run_loyo_validation(crop=crop, sector=sector)
-        _CACHE[cache_key] = {"ts": time.time(), "data": data}
-        return jsonify(data)
-    except Exception as e:
-        logger.error("LOYO validation failed: %s\n%s", e, traceback.format_exc())
-        return jsonify({"error": f"فشل حساب التحقق: {str(e)}"}), 500
+        _LOYO_JOBS[key] = {"status": "running", "result": None, "error": None, "started_at": time.time()}
+
+    thread = threading.Thread(target=_run_loyo_job_in_background, args=(crop, sector), daemon=True)
+    thread.start()
+
+    return jsonify({
+        "status": "started",
+        "message": "بدأ الحساب في الخلفية. قد يأخذ 3-7 دقائق (سنة بسنة عبر GEE).",
+        "poll_url": f"/api/validation/loyo/status?crop={crop}&sector={sector}",
+        "crop": crop,
+        "sector": sector,
+    })
+
+
+@app.route("/api/validation/loyo/status", methods=["GET"])
+def get_loyo_validation_status():
+    """
+    يرجّع حالة/نتيجة حساب LOYO الذي بدأ عبر /start.
+    status ممكن تكون: not_started | running | done | error
+    """
+    crop = request.args.get("crop", "sorghum")
+    default_sector = "mechanized_rainfed" if crop == "sesame" else "semi_mechanized"
+    sector = request.args.get("sector", default_sector)
+    key = _loyo_job_key(crop, sector)
+
+    with _LOYO_JOBS_LOCK:
+        job = _LOYO_JOBS.get(key)
+
+    if job is None:
+        return jsonify({
+            "status": "not_started",
+            "message": "لم يبدأ أي حساب بعد لهذا الـ crop/sector. استدعِ /start أولاً.",
+            "start_url": f"/api/validation/loyo/start?crop={crop}&sector={sector}",
+        })
+
+    if job["status"] == "running":
+        elapsed = round(time.time() - job["started_at"], 1)
+        return jsonify({
+            "status": "running",
+            "elapsed_seconds": elapsed,
+            "message": "لسه بيحسب... جرّب تاني بعد شوية.",
+        })
+
+    if job["status"] == "error":
+        return jsonify({
+            "status": "error",
+            "error": job["error"],
+        }), 500
+
+    # status == "done"
+    return jsonify({
+        "status": "done",
+        "result": job["result"],
+    })
 
 
 if __name__ == "__main__":
