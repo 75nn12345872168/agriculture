@@ -137,9 +137,13 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
         # "لحد اليوم" لكن آخر صورة منشورة أقدم من كده، هنحصل على مجموع أمطار ناقص بشكل
         # مصطنع (يفوّت آخر أسابيع فعلية) بينما السنوات التاريخية كاملة تماماً — ده بيضخّم
         # انحراف الأمطار سلباً بشكل غير حقيقي. نصحّح نقطة القطع تلقائياً لآخر بيانات متاحة.
+        today_str = _today.isoformat()
         latest_chirps_img = (
             ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
-            .filterBounds(AOI).sort("system:time_start", False).first()
+            .filterBounds(AOI)
+            .filterDate("2000-01-01", today_str)
+            .sort("system:time_start", False)
+            .first()
         )
         chirps_latest_str = ee.Date(latest_chirps_img.get("system:time_start")).format("YYYY-MM-dd").getInfo()
         chirps_latest_date = datetime.date.fromisoformat(chirps_latest_str)
