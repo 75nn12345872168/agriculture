@@ -285,9 +285,37 @@
 
 <script>
 /* ============================================================
-   إعداد: غيّري هذا الرابط إلى رابط الـ Backend الحقيقي بعد نشره
+   GSCSI — إعداد الاتصال بالـ Backend
+   - يحدد تلقائياً: localhost → http://localhost:8080
+   - GitHub Pages / أي https → https://gedaref-agriculture-backend.onrender.com
+   - يمكن التجاوز عبر ?api=https://... في الرابط
+   - يفرض HTTPS لتجنب Mixed Content
    ============================================================ */
-const API_BASE_URL = "https://agriculture-qpvc.onrender.com";
+const PROD_BACKENDS = [
+  "https://gedaref-agriculture-backend.onrender.com",
+  "https://agriculture-qpvc.onrender.com"  // fallback قديم
+];
+const DEFAULT_API = PROD_BACKENDS[0];
+
+function resolveApiBaseUrl(){
+  try{
+    const params = new URLSearchParams(location.search);
+    if(params.has("api")){
+      let v = params.get("api").replace(/\/$/, "");
+      // فرض HTTPS إذا كانت الصفحة https
+      if(location.protocol === "https:" && v.startsWith("http://")) v = v.replace("http://","https://");
+      return v;
+    }
+  }catch(e){}
+  const h = location.hostname;
+  if(h === "localhost" || h === "127.0.0.1" || h === "" ) return "http://localhost:8080";
+  let url = DEFAULT_API;
+  if(location.protocol === "https:" && url.startsWith("http://")) url = url.replace("http://","https://");
+  return url;
+}
+const API_BASE_URL = resolveApiBaseUrl();
+// للتشخيص في Console
+console.log("[GSCSI] API_BASE_URL =", API_BASE_URL, " host=", location.hostname);
 
 const CLASS_COLORS = {
   "فشل": "#a5311f", "خطر": "#c9752b", "متوسط": "#d0a52a", "جيد": "#6f9c4a", "ممتاز": "#2f6e3d"
@@ -304,18 +332,69 @@ for (let y = 2026; y >= 2015; y--){
 
 let map, ndviChart, activeLayer = null, currentTiles = null;
 
-function stateLoading(){
+function stateLoading(attempt=0, totalRetries=3){
   document.getElementById('dashboard').style.display = 'none';
+  let msg = "جاري حساب المؤشر من صور الأقمار الصناعية (قد يستغرق حتى دقيقة عند أول تشغيل)…";
+  if(attempt > 0){
+    msg = `⏳ الخادم يستيقظ من وضع السكون (Cold Start) — محاولة ${attempt}/${totalRetries}…<br><span style="font-size:0.82rem;opacity:0.8">خوادم Render المجانية تنام بعد 15 دقيقة، الإقلاع يستغرق 30-50 ثانية</span>`;
+  }
   document.getElementById('stateArea').innerHTML =
-    `<div class="state-msg"><span class="spinner"></span> جاري حساب المؤشر من صور الأقمار الصناعية (قد يستغرق حتى دقيقة عند أول تشغيل)…</div>`;
+    `<div class="state-msg"><span class="spinner"></span> <span>${msg}</span></div>`;
 }
-function stateError(msg){
+function stateError(msg, retryFn=null){
   document.getElementById('dashboard').style.display = 'none';
-  document.getElementById('stateArea').innerHTML = `<div class="error-box">⚠️ ${msg}</div>`;
+  const btn = retryFn ? `<br><button onclick="retryFn()" style="margin-top:10px;padding:8px 16px;border-radius:8px;border:1px solid var(--danger);background:#fff;color:var(--danger);font-weight:700;cursor:pointer">🔄 إعادة المحاولة</button>` : "";
+  // اجعل retryFn متاح عالمياً
+  if(retryFn) window._gscsiRetry = retryFn;
+  const retryHtml = retryFn ? `<br><button onclick="window._gscsiRetry()" style="margin-top:12px;padding:8px 18px;border-radius:8px;border:none;background:var(--clay);color:#fff;font-weight:700;cursor:pointer">🔄 إعادة المحاولة</button>` : "";
+  document.getElementById('stateArea').innerHTML = `<div class="error-box">⚠️ ${msg}${retryHtml}</div>`;
 }
 function stateReady(){
   document.getElementById('stateArea').innerHTML = '';
   document.getElementById('dashboard').style.display = 'block';
+}
+
+// --- Fetch مع Retry للـ Cold Start + فحص الصحة ---
+async function fetchWithRetry(url, options={}, retries=3, baseDelay=3000){
+  for(let attempt=0; attempt<=retries; attempt++){
+    const ctrl = new AbortController();
+    const timeout = setTimeout(()=> ctrl.abort(), 90000);
+    try{
+      if(attempt>0) stateLoading(attempt, retries);
+      const res = await fetch(url, {...options, signal: ctrl.signal});
+      clearTimeout(timeout);
+      // Render cold start يرجع 502/503/504 أو 502 Bad Gateway
+      if([502,503,504,520,521,522,523,524].includes(res.status) && attempt < retries){
+        throw new Error(`cold_start_${res.status}`);
+      }
+      return res;
+    }catch(e){
+      clearTimeout(timeout);
+      const isAbort = e.name === "AbortError";
+      const isCold = e.message && (e.message.startsWith("cold_start") || e.message.includes("Failed to fetch") || e.message.includes("NetworkError") || e.message.includes("Load failed"));
+      const shouldRetry = (isAbort || isCold) && attempt < retries;
+      if(shouldRetry){
+        const delay = baseDelay * Math.pow(1.6, attempt);
+        console.warn(`[GSCSI] fetch failed (attempt ${attempt+1}/${retries+1}):`, e.message, `— retry in ${Math.round(delay/1000)}s`);
+        await new Promise(r=> setTimeout(r, delay));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+async function checkHealth(){
+  const urls = [`${API_BASE_URL}/health`, `${API_BASE_URL}/api/health`];
+  for(const u of urls){
+    try{
+      const c = new AbortController(); const t=setTimeout(()=>c.abort(), 8000);
+      const r = await fetch(u, {signal:c.signal});
+      clearTimeout(t);
+      if(r.ok) return true;
+    }catch(e){}
+  }
+  return false;
 }
 
 async function loadData(){
@@ -323,19 +402,34 @@ async function loadData(){
   const [startMonth, endMonth] = document.getElementById('monthsSelect').value.split(',');
   const btn = document.getElementById('runBtn');
   btn.disabled = true;
-  stateLoading();
+  stateLoading(0);
+
+  // Mixed Content guard
+  if(location.protocol === "https:" && API_BASE_URL.startsWith("http://")){
+    stateError(`خطأ إعداد: الصفحة محملة بـ HTTPS لكن API_BASE_URL يستخدم HTTP (<code>${API_BASE_URL}</code>). المتصفح يحظر هذا (Mixed Content). غيّر API_BASE_URL إلى https.`, loadData);
+    btn.disabled = false;
+    return;
+  }
 
   const url = `${API_BASE_URL}/api/gscsi?year=${year}&start_month=${startMonth}&end_month=${endMonth}`;
   document.getElementById('rawJsonLink').href = url;
 
   try{
-    const res = await fetch(url);
+    // محاولة سريعة لفحص الصحة — لو فشل، نعطي رسالة Cold Start واضحة
+    // (لا نحظر التحميل إذا فشل الفحص، فقط للتشخيص)
+    const healthOk = await checkHealth();
+    if(!healthOk) console.warn("[GSCSI] health check failed — likely cold start, will retry");
+
+    const res = await fetchWithRetry(url, {}, 3, 3000);
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'خطأ غير معروف من الخادم');
+    if (!res.ok) throw new Error(data.error || `خطأ ${res.status} من الخادم`);
     render(data);
     stateReady();
   }catch(err){
-    stateError(`تعذّر الاتصال بخادم البيانات: ${err.message}. تأكدي أن API_BASE_URL في index.html يشير لرابط الـ backend الصحيح وأنه يعمل.`);
+    const isAbort = err.name === "AbortError";
+    const msg = isAbort ? "انتهت مهلة الاتصال (90 ثانية) — الخادم قد يكون لا يزال يستيقظ" : err.message;
+    const help = `<div style="margin-top:10px;line-height:1.8">تأكدي من:<br>• رابط الـ Backend: <code style="direction:ltr;display:inline-block">${API_BASE_URL}</code><br>• حالة الخادم: <a href="${API_BASE_URL}/health" target="_blank" style="color:var(--clay-deep)">${API_BASE_URL}/health</a> (يجب أن يرجع 200)<br>• CORS يسمح بـ <code>${location.origin}</code><br>• إذا كان الخادم على Render مجاني: انتظري 40 ثانية ثم أعيدي المحاولة (Cold Start)</div>`;
+    stateError(`تعذّر الاتصال بخادم البيانات: ${msg}. ${help}`, loadData);
   }finally{
     btn.disabled = false;
   }
