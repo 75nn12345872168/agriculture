@@ -16,9 +16,13 @@ import json
 import datetime
 import functools
 import threading
+from typing import Dict, List, Optional, Tuple, Any
 
 import ee
 import pandas as pd
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+
+import backend.config as CFG
 
 # ----------------------------------------------------------------------------
 # 1) المصادقة (Service Account) — تُقرأ من متغيّر بيئة GEE_SERVICE_ACCOUNT_JSON
@@ -58,15 +62,15 @@ def init_earth_engine():
         _EE_INITIALIZED = True
 
 
-def fc_to_df(fc):
-    features = fc.getInfo()["features"]
+def fc_to_df(fc) -> "pd.DataFrame":
+    features = _gee_get_info(fc)["features"]
     rows = [f.get("properties", {}) for f in features]
     return pd.DataFrame(rows)
 
 
-def tile_url(ee_image, vis_params):
+def tile_url(ee_image, vis_params: dict) -> str:
     """يحوّل صورة GEE إلى رابط Tile (XYZ) يمكن لأي مكتبة خرائط ويب (Leaflet/Mapbox) استخدامه."""
-    map_id = ee_image.getMapId(vis_params)
+    map_id = _gee_get_map_id(ee_image, vis_params)
     return map_id["tile_fetcher"].url_format
 
 
@@ -98,7 +102,7 @@ def load_gedaref_boundaries():
         ee.Filter.stringContains("ADM1_NAME", "Qadarif"),
     )
     gedaref_state = sudan.filter(name_filter)
-    if gedaref_state.size().getInfo() == 0:
+    if gedaref_state.size() == 0:
         raise ValueError("تعذّر العثور على ولاية القضارف آلياً في طبقة GAUL.")
 
     adm1_name = gedaref_state.first().get("ADM1_NAME")
@@ -112,7 +116,7 @@ EPS = 1e-6
 # ----------------------------------------------------------------------------
 # 3) خط الأنابيب الكامل — نفس منطق الدفتر، بشكل دالة واحدة قابلة للاستدعاء
 # ----------------------------------------------------------------------------
-def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
+def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) -> Dict[str, Any]:
     init_earth_engine()
     AOI, GEDAREF_STATE_FC, GEDAREF_LOCALITIES = load_gedaref_boundaries()
     CROPLAND_MASK = load_cropland_mask().clip(AOI)
@@ -145,7 +149,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
             .sort("system:time_start", False)
             .first()
         )
-        chirps_latest_str = ee.Date(latest_chirps_img.get("system:time_start")).format("YYYY-MM-dd").getInfo()
+        chirps_latest_str = ee.Date(latest_chirps_img.get("system:time_start")).format("YYYY-MM-dd")
         chirps_latest_date = datetime.date.fromisoformat(chirps_latest_str)
         requested_end_date = datetime.date(season_year, eff_end_month, eff_end_day)
         if chirps_latest_date < requested_end_date:
@@ -279,11 +283,11 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     # بيانات CHIRPS نفسها كل سنة على حدة — بمعيار عشاري (10 أيام) شائع في الرصد الزراعي
     # الإقليمي بشرق أفريقيا: أول عشاري تراكم أمطاره + العشاريين التاليين معاً ≥ 20مم،
     # لتفادي "بدايات كاذبة" (أمطار عابرة قليلة ما بيتبعهاش استمرارية).
-    ONSET_SEARCH_START_MONTH = 4  # نبدأ نبحث من أول أبريل
-    ONSET_SEARCH_N_DEKADS = 18    # يغطي لحد منتصف سبتمبر تقريباً
-    ONSET_MIN_DEKAD_MM = 20
-    ONSET_CONFIRM_DEKADS = 2
-    ONSET_CONFIRM_MIN_MM = 20
+    ONSET_SEARCH_START_MONTH = CFG.ONSET["search_start_month"]
+    ONSET_SEARCH_N_DEKADS = CFG.ONSET["n_dekads"]
+    ONSET_MIN_DEKAD_MM = CFG.ONSET["min_mm"]
+    ONSET_CONFIRM_DEKADS = CFG.ONSET["confirm_dekads"]
+    ONSET_CONFIRM_MIN_MM = CFG.ONSET["confirm_min_mm"]
 
     # ملاحظة هندسية: جُرِّب مصدر "شبه لحظي" بديل (CHIRPS v3) لكشف بداية الموسم بسرعة أكبر،
     # لكن تبيّن من التوثيق الرسمي إن تغطيته الفعلية بتوقف مبكراً (لا تصل لموسم 2026 كاملاً)،
@@ -330,7 +334,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     onset_years = list(range(RAIN_HIST_START_YEAR, season_year + 1))
     onset_years_ee = ee.List(onset_years)
     onset_matrix_ee = onset_years_ee.map(lambda y: get_dekad_sums_for_year(ee.Number(y), AOI))
-    onset_matrix = onset_matrix_ee.getInfo()  # [[dekad_sums لكل سنة], ...]
+    onset_matrix = onset_matrix_ee  # [[dekad_sums لكل سنة], ...]
 
     onset_indices = {y: find_onset_dekad_index(sums) for y, sums in zip(onset_years, onset_matrix)}
     current_onset_idx = onset_indices.get(season_year)
@@ -355,8 +359,8 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     # نمو خضري 35 يوم = بداية الإزهار/منتصف الموسم عند يوم 55 من الزراعة، ومدة الإزهار
     # وامتلاء أول الحبوب 40 يوم إضافي). تاريخ "الزراعة" هنا = تاريخ بداية الموسم المُكتشف
     # ديناميكياً، مش تاريخ ثابت مفروض.
-    FLOWERING_START_OFFSET_DAYS = 55
-    FLOWERING_END_OFFSET_DAYS = 95
+    FLOWERING_START_OFFSET_DAYS = CFG.FLOWERING["start_offset_days"]
+    FLOWERING_END_OFFSET_DAYS = CFG.FLOWERING["end_offset_days"]
 
     flowering_window = None
     flowering_rain_anomaly_pct = None
@@ -397,7 +401,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
 
             vals = ee.Dictionary({
                 "current": flowering_rain_current, "hist": flowering_rain_hist_mean
-            }).getInfo()
+            })
             cur_v, hist_v = vals.get("current"), vals.get("hist")
             if cur_v is not None and hist_v not in (None, 0):
                 flowering_rain_anomaly_pct = round((cur_v - hist_v) / abs(hist_v) * 100, 1)
@@ -449,7 +453,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     VHI = VCI.multiply(0.5).add(TCI.multiply(0.5)).rename("VHI")
 
     # ---------------- Dekadal dry-spell score (spatial) ----------------
-    DRY_DEKAD_THRESHOLD_MM = 5
+    DRY_DEKAD_THRESHOLD_MM = CFG.DRY_DEKAD_THRESHOLD_MM
 
     def get_dekadal_rainfall_collection(year, s_month, e_month, aoi):
         start = ee.Date.fromYMD(year, s_month, 1)
@@ -482,17 +486,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     )
 
     # ---------------- Composite GSCSI ----------------
-    GSCSI_WEIGHTS = {
-        "NDVI_Anomaly_Score": 0.17,
-        "Rainfall_Anomaly_Score": 0.17,
-        "VHI_Score": 0.15,
-        "SPEI_Score": 0.10,
-        "SoilMoisture_Score": 0.10,
-        "LST_Score": 0.13,
-        "NDMI_Score": 0.04,
-        "LAI_Score": 0.04,
-        "Dry_Spell_Score": 0.10,
-    }
+    GSCSI_WEIGHTS = CFG.GSCSI_WEIGHTS  # من config.py — مجموعها متحقق =1.0
 
     def normalize_band(image, band, vmin, vmax, invert=False, out_name=None):
         img = image.select(band)
@@ -521,8 +515,8 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
         GSCSI = GSCSI.add(score_bands.select(band_name).multiply(weight))
     GSCSI = GSCSI.rename("GSCSI").clip(AOI)
 
-    GSCSI_CLASS_LABELS = {1: "فشل", 2: "خطر", 3: "متوسط", 4: "جيد", 5: "ممتاز"}
-    GSCSI_CLASS_PALETTE = ["a50026", "f46d43", "fee08b", "66bd63", "1a9850"]
+    GSCSI_CLASS_LABELS = CFG.GSCSI_CLASS_LABELS
+    GSCSI_CLASS_PALETTE = CFG.GSCSI_CLASS_PALETTE
 
     GSCSI_CLASS = (
         ee.Image(1)
@@ -589,10 +583,10 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
                     ee.Date.fromYMD(MODIS_HIST_END_YEAR, end_month, 1).advance(1, "month"))
         .map(add_mean_ndvi)
     )
-    current_dates = current_season_ndvi_col.aggregate_array("date_str").getInfo()
-    current_vals = current_season_ndvi_col.aggregate_array("ndvi_mean").getInfo()
-    hist_dates = hist_ndvi_col.aggregate_array("date_str").getInfo()
-    hist_vals = hist_ndvi_col.aggregate_array("ndvi_mean").getInfo()
+    current_dates = current_season_ndvi_col.aggregate_array("date_str")
+    current_vals = current_season_ndvi_col.aggregate_array("ndvi_mean")
+    hist_dates = hist_ndvi_col.aggregate_array("date_str")
+    hist_vals = hist_ndvi_col.aggregate_array("ndvi_mean")
 
     df_current = pd.DataFrame({"date": pd.to_datetime(current_dates), "ndvi": current_vals})
     df_current["ndvi"] = df_current["ndvi"] * 0.0001
@@ -613,7 +607,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     # مايغطيش المنطقة لأي سبب) — نرجع للمتوسط الكامل بدل ما نطلّع قيمة فارغة.
     def region_mean(image, band_name, mask=True):
         img = image.updateMask(CROPLAND_MASK) if mask else image
-        info = img.reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=1000, maxPixels=1e9).getInfo()
+        info = img.reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=1000, maxPixels=1e9)
         return info.get(band_name)
 
     gscsi_mean_val = region_mean(GSCSI, "GSCSI", mask=True)
@@ -651,7 +645,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10):
     if rain_anom_val is None:
         rain_anom_val = region_mean(rainfall_anomaly_pct, "Rainfall_Anomaly_Pct", mask=False)
 
-    centroid = AOI.centroid(1).coordinates().getInfo()  # [lon, lat]
+    centroid = AOI.centroid(1).coordinates()  # [lon, lat]
 
     return {
         "meta": {
@@ -878,11 +872,7 @@ def run_loyo_validation(crop: str = "sorghum", sector: str = "semi_mechanized",
 # الأمطار الزمني (فترات الجفاف الحرجة) أهم من المجموع الكلي في تحديد الغلة.
 
 WEIGHT_VARIANTS = {
-    "baseline": {
-        "NDVI_Anomaly_Score": 0.17, "Rainfall_Anomaly_Score": 0.17, "VHI_Score": 0.15,
-        "SPEI_Score": 0.10, "SoilMoisture_Score": 0.10, "LST_Score": 0.13,
-        "NDMI_Score": 0.04, "LAI_Score": 0.04, "Dry_Spell_Score": 0.10,
-    },
+    "baseline": CFG.GSCSI_WEIGHTS,
     "dry_spell_boost": {
         "NDVI_Anomaly_Score": 0.14, "Rainfall_Anomaly_Score": 0.12, "VHI_Score": 0.13,
         "SPEI_Score": 0.08, "SoilMoisture_Score": 0.08, "LST_Score": 0.11,

@@ -1,0 +1,29 @@
+# === Secrets — لا ترفع أبداً ===
+service-account*.json
+*directed-seeker*.json
+*.pem
+*.key
+.env
+.env.*
+GEE_SERVICE_ACCOUNT_JSON
+hermes_execution.log
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Data exports (تولد محلياً) ===
+*.tif
+*.kml
+*.geojson
+/tmp/
