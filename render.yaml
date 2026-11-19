@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: agriculture-qpvc
+    runtime: docker
+    rootDir: .
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: GEE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: PYTHONUNBUFFERED
+        value: "1"

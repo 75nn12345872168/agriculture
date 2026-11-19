@@ -17,7 +17,9 @@ GSCSI_WEIGHTS: Final[Dict[str, float]] = {
     "Dry_Spell_Score": 0.10,
 }
 # فحص مجموع الأوزان فور الاستيراد — يفشل الـ import لو خطأ
-assert abs(sum(GSCSI_WEIGHTS.values()) - 1.0) < 1e-9, f"مجموع أوزان GSCSI يجب =1.0 وجد {sum(GSCSI_WEIGHTS.values())}"
+assert abs(sum(GSCSI_WEIGHTS.values()) - 1.0) < 1e-9, (
+    f"مجموع أوزان GSCSI يجب =1.0 وجد {sum(GSCSI_WEIGHTS.values())}"
+)
 
 # كشف بداية الموسم (dekad)
 ONSET: Final[Dict[str, int]] = {
@@ -37,12 +39,17 @@ FLOWERING: Final[Dict[str, int]] = {
 DRY_DEKAD_THRESHOLD_MM: Final[float] = 5.0
 
 CACHE_TTL_SECONDS: Final[int] = 6 * 60 * 60  # 6 ساعات
+GEE_HEALTH_CACHE_TTL_SECONDS: Final[int] = 5 * 60  # 5 دقائق
+
+# روابط الإنتاج المعتمدة
+FRONTEND_URL: Final[str] = "https://75nn12345872168.github.io/agriculture/"
+PROD_BACKEND_URL: Final[str] = "https://agriculture-qpvc.onrender.com"
 
 CORS_ALLOWED_ORIGINS: Final[list] = [
     "https://75nn12345872168.github.io",
-    "https://gedaref-agriculture-backend.onrender.com",
     "https://agriculture-qpvc.onrender.com",
     "http://localhost:8080",
+    "http://127.0.0.1:8080",
     "http://127.0.0.1:5500",
     "http://localhost:3000",
 ]
@@ -50,11 +57,13 @@ CORS_ALLOWED_ORIGINS: Final[list] = [
 # Regex للسماح بأي نطاق فرعي على github.io (مطلوب لـ GitHub Pages)
 CORS_ALLOWED_ORIGIN_REGEX: Final[str] = r"^https://[a-zA-Z0-9._-]+\.github\.io$"
 
-# Backend prod fallback — يستخدم في الواجهة الأمامية
-PROD_BACKEND_URL: Final[str] = "https://gedaref-agriculture-backend.onrender.com"
-PROD_BACKEND_FALLBACK_URL: Final[str] = "https://agriculture-qpvc.onrender.com"
-
-GSCSI_CLASS_LABELS: Final[Dict[int, str]] = {1: "فشل", 2: "خطر", 3: "متوسط", 4: "جيد", 5: "ممتاز"}
+GSCSI_CLASS_LABELS: Final[Dict[int, str]] = {
+    1: "فشل",
+    2: "خطر",
+    3: "متوسط",
+    4: "جيد",
+    5: "ممتاز",
+}
 GSCSI_CLASS_PALETTE: Final[list] = ["a50026", "f46d43", "fee08b", "66bd63", "1a9850"]
 
 # حدود التحقق
@@ -64,13 +73,30 @@ YEAR_MAX: Final[int] = 2030
 WEIGHT_VARIANTS: Final[Dict[str, Dict[str, float]]] = {
     "baseline": GSCSI_WEIGHTS,
     "dry_spell_boost": {
-        "NDVI_Anomaly_Score": 0.14, "Rainfall_Anomaly_Score": 0.12, "VHI_Score": 0.13,
-        "SPEI_Score": 0.08, "SoilMoisture_Score": 0.08, "LST_Score": 0.11,
-        "NDMI_Score": 0.04, "LAI_Score": 0.05, "Dry_Spell_Score": 0.25,
+        "NDVI_Anomaly_Score": 0.14,
+        "Rainfall_Anomaly_Score": 0.12,
+        "VHI_Score": 0.13,
+        "SPEI_Score": 0.08,
+        "SoilMoisture_Score": 0.08,
+        "LST_Score": 0.11,
+        "NDMI_Score": 0.04,
+        "LAI_Score": 0.05,
+        "Dry_Spell_Score": 0.25,
     },
     "dry_spell_dominant": {
-        "NDVI_Anomaly_Score": 0.10, "Rainfall_Anomaly_Score": 0.08, "VHI_Score": 0.10,
-        "SPEI_Score": 0.07, "SoilMoisture_Score": 0.07, "LST_Score": 0.10,
-        "NDMI_Score": 0.03, "LAI_Score": 0.10, "Dry_Spell_Score": 0.35,
+        "NDVI_Anomaly_Score": 0.10,
+        "Rainfall_Anomaly_Score": 0.08,
+        "VHI_Score": 0.10,
+        "SPEI_Score": 0.07,
+        "SoilMoisture_Score": 0.07,
+        "LST_Score": 0.10,
+        "NDMI_Score": 0.03,
+        "LAI_Score": 0.10,
+        "Dry_Spell_Score": 0.35,
     },
 }
+
+for _variant_name, _variant_weights in WEIGHT_VARIANTS.items():
+    assert abs(sum(_variant_weights.values()) - 1.0) < 1e-9, (
+        f"مجموع أوزان {_variant_name} يجب =1.0 وجد {sum(_variant_weights.values())}"
+    )

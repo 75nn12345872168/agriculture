@@ -5,10 +5,14 @@ gscsi_engine.py
 النسخة المُعاد هيكلتها من دفتر GSCSI (Gedaref Seasonal Crop Success Index) لتعمل
 كوحدة خادوم (server-side) تُستدعى من Flask بدلاً من كونها خلايا Colab تفاعلية.
 
-المنطق العلمي والحسابي **لم يتغيّر** عن الدفتر الأصلي — فقط:
-  1) المصادقة أصبحت عبر Service Account من متغيّر بيئة بدل رفع ملف يدوياً في Colab.
-  2) نتائج الخرائط تُعاد كروابط Tile (XYZ) عبر ee.Image.getMapId() بدل عرضها في geemap.
-  3) لا يوجد matplotlib/rasterio/تصدير محلي — النتائج ترجع كـ JSON للواجهة الأمامية.
+التحسينات الهندسية المطبّقة:
+  1) تغليف جميع استدعاءات Earth Engine بـ tenacity مع exponential backoff عبر
+     _gee_get_info و _gee_get_map_id.
+  2) دمج استعلامات reduceRegion للملخص والمؤشرات الفرعية الـ 9 + الإحداثيات المركزية
+     في استدعاء واحد (ee.Image.cat + ee.Dictionary) لتقليل زمن الاستجابة بشكل جذري.
+  3) دمج استعلامات السلسلة الزمنية لـ NDVI في ee.Dictionary واحد مع فلترة أشهر الموسم.
+  4) حماية التواريخ الحدّية في الموسم الجاري (YTD) لمنع إرسال نطاقات معكوسة إلى GEE.
+  5) توحيد WEIGHT_VARIANTS من backend.config كمصدر حقيقة وحيد.
 """
 
 import os
@@ -16,13 +20,66 @@ import json
 import datetime
 import functools
 import threading
+import logging
 from typing import Dict, List, Optional, Tuple, Any
 
 import ee
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
-import backend.config as CFG
+try:
+    import backend.config as CFG
+except ModuleNotFoundError:
+    import config as CFG
+
+logger = logging.getLogger("gscsi-engine")
+
+
+def _utc_now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None).isoformat() + "Z"
+
+
+# ----------------------------------------------------------------------------
+# 0) استدعاءات GEE محصّنة بـ tenacity ضد أخطاء الشبكة والحصة المؤقتة
+# ----------------------------------------------------------------------------
+def _is_retryable_gee_error(exc: BaseException) -> bool:
+    """إعادة المحاولة للأخطاء الشبكية/المؤقتة فقط، وتجنّب إعادة أخطاء البرمجة أو المدخلات."""
+    if isinstance(exc, (TypeError, ValueError, KeyError, AttributeError)):
+        return False
+    msg = str(exc).lower()
+    non_retryable_tokens = (
+        "invalid argument",
+        "not found",
+        "permission denied",
+        "unauthenticated",
+        "no valid",
+    )
+    if any(tok in msg for tok in non_retryable_tokens):
+        return False
+    return True
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception(_is_retryable_gee_error),
+    reraise=True,
+)
+def _gee_get_info(ee_obj: Any) -> Any:
+    """يجلب قيمة كائن Earth Engine إلى بايثون مع إعادة محاولة تلقائية عند أخطاء الشبكة المؤقتة."""
+    return ee_obj.getInfo()
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception(_is_retryable_gee_error),
+    reraise=True,
+)
+def _gee_get_map_id(ee_image: Any, vis_params: dict) -> dict:
+    """ينشئ معرف طبقة خرائط GEE مع إعادة محاولة تلقائية عند أخطاء الشبكة المؤقتة."""
+    return ee_image.getMapId(vis_params)
+
 
 # ----------------------------------------------------------------------------
 # 1) المصادقة (Service Account) — تُقرأ من متغيّر بيئة GEE_SERVICE_ACCOUNT_JSON
@@ -63,7 +120,8 @@ def init_earth_engine():
 
 
 def fc_to_df(fc) -> "pd.DataFrame":
-    features = _gee_get_info(fc)["features"]
+    info = _gee_get_info(fc) or {}
+    features = info.get("features", [])
     rows = [f.get("properties", {}) for f in features]
     return pd.DataFrame(rows)
 
@@ -82,8 +140,6 @@ def load_cropland_mask():
     """
     قناع الأراضي الزراعية الفعلية — مصدره ESA WorldCover v200 (دقة 10م، 2021)، وهو
     مجاني ومتاح عالمياً في Earth Engine. الفئة 40 = أراضي زراعية (Cropland).
-    استخدام القناع ده بيخلي المؤشرات تتحسب على الحقول الزراعية فعلياً بدل ما تتخفف
-    بمتوسط يشمل الصحراء/الغابات/المدن الموجودة في نفس المحلية.
     """
     worldcover = ee.ImageCollection("ESA/WorldCover/v200").first()
     return worldcover.eq(40).rename("cropland")
@@ -102,7 +158,7 @@ def load_gedaref_boundaries():
         ee.Filter.stringContains("ADM1_NAME", "Qadarif"),
     )
     gedaref_state = sudan.filter(name_filter)
-    if gedaref_state.size() == 0:
+    if _gee_get_info(gedaref_state.size()) == 0:
         raise ValueError("تعذّر العثور على ولاية القضارف آلياً في طبقة GAUL.")
 
     adm1_name = gedaref_state.first().get("ADM1_NAME")
@@ -113,10 +169,50 @@ def load_gedaref_boundaries():
 EPS = 1e-6
 
 
+def _resolve_season_dates(
+    season_year: int,
+    start_month: int,
+    end_month: int,
+    today: Optional[datetime.date] = None,
+) -> Tuple[datetime.date, datetime.date, bool]:
+    """
+    يتحقق من صلاحية نافذة الموسم مقارنةً بتاريخ اليوم لمنع إرسال نطاق زمني معكوس
+    (SEASON_END <= SEASON_START) إلى Google Earth Engine.
+    يعيد: (season_start_date, season_end_exclusive_date, is_ytd).
+    """
+    _today = today or datetime.date.today()
+    season_start_py = datetime.date(season_year, start_month, 1)
+    season_end_exclusive_py = (
+        datetime.date(season_year + 1, 1, 1)
+        if end_month == 12
+        else datetime.date(season_year, end_month + 1, 1)
+    )
+
+    if season_year > _today.year or (season_year == _today.year and _today <= season_start_py):
+        raise ValueError(
+            f"موسم {season_year} (بداية من شهر {start_month}) لم يبدأ بعد حتى تاريخ اليوم "
+            f"({_today.isoformat()}). يرجى اختيار موسم سابق أو نافذة زمنية متاحة."
+        )
+
+    is_ytd = (season_year == _today.year) and (_today < season_end_exclusive_py)
+    effective_end_py = _today if is_ytd else season_end_exclusive_py
+    if effective_end_py <= season_start_py:
+        raise ValueError(
+            f"نطاق الموسم غير صالح: تاريخ النهاية ({effective_end_py.isoformat()}) "
+            f"يسبق أو يساوي تاريخ البداية ({season_start_py.isoformat()})."
+        )
+    return season_start_py, effective_end_py, is_ytd
+
+
 # ----------------------------------------------------------------------------
 # 3) خط الأنابيب الكامل — نفس منطق الدفتر، بشكل دالة واحدة قابلة للاستدعاء
 # ----------------------------------------------------------------------------
 def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) -> Dict[str, Any]:
+    _today = datetime.date.today()
+    season_start_py, effective_end_py, is_ytd = _resolve_season_dates(
+        season_year, start_month, end_month, today=_today
+    )
+
     init_earth_engine()
     AOI, GEDAREF_STATE_FC, GEDAREF_LOCALITIES = load_gedaref_boundaries()
     CROPLAND_MASK = load_cropland_mask().clip(AOI)
@@ -129,18 +225,12 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
     SEASON_START = ee.Date.fromYMD(season_year, start_month, 1)
     SEASON_END = ee.Date.fromYMD(season_year, end_month, 1).advance(1, "month")
 
-    _today = datetime.date.today()
-    is_ytd = (season_year == _today.year) and (_today < datetime.date(season_year, end_month, 1))
     data_latency_adjusted = False
     if is_ytd:
-        eff_end_month, eff_end_day = _today.month, _today.day
+        eff_end_month, eff_end_day = effective_end_py.month, effective_end_py.day
         SEASON_END = ee.Date.fromYMD(season_year, eff_end_month, eff_end_day)
 
-        # ---- صمام أمان توفر البيانات (منقول من الدفتر الأصلي) ----
-        # بيانات CHIRPS تُنشر بفجوة زمنية (latency) عن التاريخ الفعلي. لو طلبنا بيانات
-        # "لحد اليوم" لكن آخر صورة منشورة أقدم من كده، هنحصل على مجموع أمطار ناقص بشكل
-        # مصطنع (يفوّت آخر أسابيع فعلية) بينما السنوات التاريخية كاملة تماماً — ده بيضخّم
-        # انحراف الأمطار سلباً بشكل غير حقيقي. نصحّح نقطة القطع تلقائياً لآخر بيانات متاحة.
+        # ---- صمام أمان توفر البيانات (فجوة نشر CHIRPS) ----
         today_str = _today.isoformat()
         latest_chirps_img = (
             ee.ImageCollection("UCSB-CHG/CHIRPS/DAILY")
@@ -149,13 +239,23 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
             .sort("system:time_start", False)
             .first()
         )
-        chirps_latest_str = ee.Date(latest_chirps_img.get("system:time_start")).format("YYYY-MM-dd")
-        chirps_latest_date = datetime.date.fromisoformat(chirps_latest_str)
-        requested_end_date = datetime.date(season_year, eff_end_month, eff_end_day)
-        if chirps_latest_date < requested_end_date:
-            eff_end_month, eff_end_day = chirps_latest_date.month, chirps_latest_date.day
-            SEASON_END = ee.Date.fromYMD(season_year, eff_end_month, eff_end_day)
-            data_latency_adjusted = True
+        chirps_ts = latest_chirps_img.get("system:time_start")
+        chirps_latest_str = _gee_get_info(
+            ee.Algorithms.If(chirps_ts, ee.Date(chirps_ts).format("YYYY-MM-dd"), None)
+        )
+        if chirps_latest_str:
+            chirps_latest_date = datetime.date.fromisoformat(chirps_latest_str)
+            requested_end_date = datetime.date(season_year, eff_end_month, eff_end_day)
+            if chirps_latest_date < requested_end_date:
+                if chirps_latest_date <= season_start_py:
+                    raise ValueError(
+                        f"آخر بيانات أمطار CHIRPS المتاحة ({chirps_latest_date.isoformat()}) "
+                        f"تسبق بداية موسم {season_year} ({season_start_py.isoformat()}). "
+                        f"يرجى اختيار موسم سابق حتى تتوفر بيانات الموسم الجديد."
+                    )
+                eff_end_month, eff_end_day = chirps_latest_date.month, chirps_latest_date.day
+                SEASON_END = ee.Date.fromYMD(season_year, eff_end_month, eff_end_day)
+                data_latency_adjusted = True
     else:
         eff_end_month, eff_end_day = end_month, None
 
@@ -242,7 +342,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
 
     sensor_offset = ee.Number(
         landsat_lst_current.subtract(lst_current_modis)
-        .reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=500, maxPixels=1e9)
+        .reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=500, maxPixels=1e9, tileScale=4)
         .get("LST")
     )
     lst_hist_mean_adj = lst_hist_mean.add(sensor_offset).rename("LST_mean_hist_adj")
@@ -279,20 +379,12 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
     SPI = rain_current_season.subtract(rain_hist_mean).divide(rain_hist_std.add(EPS)).rename("SPI")
 
     # ---------------- كشف بداية الموسم الفعلية (Rainy Season Onset) ----------------
-    # بدل افتراض تاريخ زراعة ثابت (1 يونيو)، نكتشف التاريخ الفعلي لبداية موسم الأمطار من
-    # بيانات CHIRPS نفسها كل سنة على حدة — بمعيار عشاري (10 أيام) شائع في الرصد الزراعي
-    # الإقليمي بشرق أفريقيا: أول عشاري تراكم أمطاره + العشاريين التاليين معاً ≥ 20مم،
-    # لتفادي "بدايات كاذبة" (أمطار عابرة قليلة ما بيتبعهاش استمرارية).
     ONSET_SEARCH_START_MONTH = CFG.ONSET["search_start_month"]
     ONSET_SEARCH_N_DEKADS = CFG.ONSET["n_dekads"]
     ONSET_MIN_DEKAD_MM = CFG.ONSET["min_mm"]
     ONSET_CONFIRM_DEKADS = CFG.ONSET["confirm_dekads"]
     ONSET_CONFIRM_MIN_MM = CFG.ONSET["confirm_min_mm"]
 
-    # ملاحظة هندسية: جُرِّب مصدر "شبه لحظي" بديل (CHIRPS v3) لكشف بداية الموسم بسرعة أكبر،
-    # لكن تبيّن من التوثيق الرسمي إن تغطيته الفعلية بتوقف مبكراً (لا تصل لموسم 2026 كاملاً)،
-    # فبيرجع نتائج فاضية بدل بيانات حقيقية. تراجعنا عنه والتزمنا بـ CHIRPS النهائي فقط —
-    # أبطأ في النشر، لكنه المصدر الوحيد المُتحقَّق من دقته فعلياً في هذا التطبيق.
     def get_dekad_sums_for_year(year, aoi):
         start = ee.Date.fromYMD(year, ONSET_SEARCH_START_MONTH, 1)
         source = CHIRPS
@@ -318,9 +410,10 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
 
         return dekad_list.map(one)
 
-
     def find_onset_dekad_index(dekad_sums):
         """منطق كشف بداية الموسم يُنفَّذ في بايثون بعد سحب مجاميع العشاريات دفعة واحدة."""
+        if not dekad_sums:
+            return None
         n = len(dekad_sums)
         for i in range(n - ONSET_CONFIRM_DEKADS):
             if dekad_sums[i] >= ONSET_MIN_DEKAD_MM:
@@ -329,12 +422,10 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
                     return i
         return None
 
-    # نسحب مجاميع العشاريات لكل السنوات (الحالية + التاريخية) في استدعاء واحد فقط لتقليل
-    # عدد الرحلات بين الخادم و Earth Engine.
     onset_years = list(range(RAIN_HIST_START_YEAR, season_year + 1))
     onset_years_ee = ee.List(onset_years)
     onset_matrix_ee = onset_years_ee.map(lambda y: get_dekad_sums_for_year(ee.Number(y), AOI))
-    onset_matrix = onset_matrix_ee  # [[dekad_sums لكل سنة], ...]
+    onset_matrix = _gee_get_info(onset_matrix_ee) or []
 
     onset_indices = {y: find_onset_dekad_index(sums) for y, sums in zip(onset_years, onset_matrix)}
     current_onset_idx = onset_indices.get(season_year)
@@ -354,11 +445,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
         if (onset_date_current and onset_date_typical) else None
     )
 
-    # ---------------- نافذة الإزهار (أكثر مراحل النمو حساسية للجفاف) ----------------
-    # مبنية على أطوال مراحل نمو الذرة الرفيعة القياسية بجداول FAO-56 (ابتدائي 20 يوم +
-    # نمو خضري 35 يوم = بداية الإزهار/منتصف الموسم عند يوم 55 من الزراعة، ومدة الإزهار
-    # وامتلاء أول الحبوب 40 يوم إضافي). تاريخ "الزراعة" هنا = تاريخ بداية الموسم المُكتشف
-    # ديناميكياً، مش تاريخ ثابت مفروض.
+    # ---------------- نافذة الإزهار (FAO-56 للذرة الرفيعة) ----------------
     FLOWERING_START_OFFSET_DAYS = CFG.FLOWERING["start_offset_days"]
     FLOWERING_END_OFFSET_DAYS = CFG.FLOWERING["end_offset_days"]
 
@@ -367,8 +454,6 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
     if onset_date_current is not None:
         flow_start = onset_date_current + datetime.timedelta(days=FLOWERING_START_OFFSET_DAYS)
         flow_end = onset_date_current + datetime.timedelta(days=FLOWERING_END_OFFSET_DAYS)
-        # حد أقصى: المصدر السريع شبه لحظي، فنقص عند "اليوم" الفعلي بدل نقطة قطع
-        # CHIRPS النهائي المتأخرة — لكن فقط للموسم الحالي الجاري (YTD).
         data_cutoff = (
             datetime.date(season_year, eff_end_month, eff_end_day) if is_ytd
             else datetime.date(season_year, end_month, 28)
@@ -399,9 +484,10 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
                 .get("precipitation", 0)
             )
 
-            vals = ee.Dictionary({
-                "current": flowering_rain_current, "hist": flowering_rain_hist_mean
-            })
+            vals = _gee_get_info(ee.Dictionary({
+                "current": flowering_rain_current,
+                "hist": flowering_rain_hist_mean,
+            })) or {}
             cur_v, hist_v = vals.get("current"), vals.get("hist")
             if cur_v is not None and hist_v not in (None, 0):
                 flowering_rain_anomaly_pct = round((cur_v - hist_v) / abs(hist_v) * 100, 1)
@@ -457,8 +543,6 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
 
     def get_dekadal_rainfall_collection(year, s_month, e_month, aoi):
         start = ee.Date.fromYMD(year, s_month, 1)
-        # نستخدم نفس نقطة القطع المصحّحة (eff_end_month/eff_end_day بعد صمام أمان توفر
-        # البيانات) بدل "اليوم" الفعلي مباشرة، لتفادي نفس مشكلة فجوة نشر CHIRPS هنا أيضاً.
         if is_ytd and year == season_year:
             end = ee.Date.fromYMD(year, eff_end_month, eff_end_day)
         else:
@@ -486,7 +570,7 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
     )
 
     # ---------------- Composite GSCSI ----------------
-    GSCSI_WEIGHTS = CFG.GSCSI_WEIGHTS  # من config.py — مجموعها متحقق =1.0
+    GSCSI_WEIGHTS = CFG.GSCSI_WEIGHTS
 
     def normalize_band(image, band, vmin, vmax, invert=False, out_name=None):
         img = image.select(band)
@@ -525,9 +609,6 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
     )
 
     # ---------------- Tile URLs for the web map ----------------
-    # الطبقات دي بتتقصّ على الأراضي الزراعية الفعلية بس (قناع WorldCover) — البكسلات
-    # برّه الأراضي الزراعية بتبقى شفافة فتظهر خريطة الأساس تحتها، فتشوفي بالظبط فين
-    # الحقول المجهدة بدل ما تتوه في متوسط يشمل صحراء/مدن.
     gscsi_vis = {"min": 0, "max": 100, "palette": GSCSI_CLASS_PALETTE}
     class_vis = {"min": 1, "max": 5, "palette": GSCSI_CLASS_PALETTE}
     ndvi_vis = {"min": -0.2, "max": 0.9, "palette": ["a50026", "fee08b", "1a9850"]}
@@ -551,16 +632,26 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
 
     def zonal_stats_df(image):
         fc = image.reduceRegions(collection=GEDAREF_LOCALITIES, reducer=ee.Reducer.mean(), scale=500, tileScale=8)
-        return fc_to_df(fc).set_index("ADM2_NAME")
+        df = fc_to_df(fc)
+        if "ADM2_NAME" in df.columns:
+            return df.set_index("ADM2_NAME")
+        return df
 
-    # نحسب مرتين: نسخة مقصوصة على الأراضي الزراعية (الأدق)، ونسخة كاملة كاحتياط (fallback)
-    # لأي محلية ممكن ماتحتويش على بكسلات زراعية كافية بعد التصفية (تفادياً لقيم فارغة).
+    # نحسب نسخة الأراضي الزراعية أولاً، ولا نلجأ للنسخة الكاملة إلا عند وجود محلية ناقصة فعلياً
     df_cropland = zonal_stats_df(zonal_image.updateMask(CROPLAND_MASK))
-    df_fallback = zonal_stats_df(zonal_image)
-    df_stats = df_cropland.combine_first(df_fallback).reset_index()
     crop_mask_coverage = (
-        df_cropland["GSCSI"].notna().sum() if "GSCSI" in df_cropland.columns else 0
+        int(df_cropland["GSCSI"].notna().sum()) if "GSCSI" in df_cropland.columns else 0
     )
+    needs_zonal_fallback = (
+        df_cropland.empty
+        or "GSCSI" not in df_cropland.columns
+        or bool(df_cropland["GSCSI"].isna().any())
+    )
+    if needs_zonal_fallback:
+        df_fallback = zonal_stats_df(zonal_image)
+        df_stats = df_cropland.combine_first(df_fallback).reset_index()
+    else:
+        df_stats = df_cropland.reset_index()
 
     if "GSCSI_Class" in df_stats.columns:
         df_stats["GSCSI_Class_Label"] = df_stats["GSCSI_Class"].round().map(GSCSI_CLASS_LABELS)
@@ -568,61 +659,102 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
         "ADM2_NAME", "GSCSI", "GSCSI_Class_Label", "Rain_Season_mm", "Rainfall_Anomaly_Pct",
         "NDVI", "NDMI", "VCI", "TCI",
     ] if c in df_stats.columns]
-    df_stats = df_stats[keep_cols].sort_values("GSCSI", ascending=False).reset_index(drop=True)
+    if "GSCSI" in df_stats.columns:
+        df_stats = df_stats[keep_cols].sort_values("GSCSI", ascending=False).reset_index(drop=True)
+    else:
+        df_stats = df_stats[keep_cols].reset_index(drop=True)
     localities = json.loads(df_stats.round(2).to_json(orient="records", force_ascii=False))
 
-    # ---------------- NDVI current vs. historical climatology chart ----------------
+    # ---------------- NDVI current vs. historical climatology chart (Batched) ----------------
     def add_mean_ndvi(img):
-        mean_val = img.reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=500, maxPixels=1e9).get("NDVI")
+        mean_val = img.reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=500, maxPixels=1e9, tileScale=4).get("NDVI")
         return img.set("ndvi_mean", mean_val, "date_str", img.date().format("YYYY-MM-dd"))
 
     current_season_ndvi_col = MODIS_NDVI_COL.filterBounds(AOI).filterDate(SEASON_START, SEASON_END).map(add_mean_ndvi)
     hist_ndvi_col = (
         MODIS_NDVI_COL.filterBounds(AOI)
-        .filterDate(ee.Date.fromYMD(MODIS_HIST_START_YEAR, start_month, 1),
-                    ee.Date.fromYMD(MODIS_HIST_END_YEAR, end_month, 1).advance(1, "month"))
+        .filterDate(
+            ee.Date.fromYMD(MODIS_HIST_START_YEAR, start_month, 1),
+            ee.Date.fromYMD(MODIS_HIST_END_YEAR, end_month, 1).advance(1, "month"),
+        )
+        .filter(ee.Filter.calendarRange(start_month, end_month, "month"))
         .map(add_mean_ndvi)
     )
-    current_dates = current_season_ndvi_col.aggregate_array("date_str")
-    current_vals = current_season_ndvi_col.aggregate_array("ndvi_mean")
-    hist_dates = hist_ndvi_col.aggregate_array("date_str")
-    hist_vals = hist_ndvi_col.aggregate_array("ndvi_mean")
 
-    df_current = pd.DataFrame({"date": pd.to_datetime(current_dates), "ndvi": current_vals})
-    df_current["ndvi"] = df_current["ndvi"] * 0.0001
-    df_current["doy"] = df_current["date"].dt.dayofyear
+    ndvi_payload = _gee_get_info(ee.Dictionary({
+        "current_dates": current_season_ndvi_col.aggregate_array("date_str"),
+        "current_vals": current_season_ndvi_col.aggregate_array("ndvi_mean"),
+        "hist_dates": hist_ndvi_col.aggregate_array("date_str"),
+        "hist_vals": hist_ndvi_col.aggregate_array("ndvi_mean"),
+    })) or {}
 
-    df_hist = pd.DataFrame({"date": pd.to_datetime(hist_dates), "ndvi": hist_vals})
-    df_hist["ndvi"] = df_hist["ndvi"] * 0.0001
-    df_hist["doy"] = df_hist["date"].dt.dayofyear
-    hist_climatology = df_hist.groupby("doy")["ndvi"].agg(["mean", "std"]).reset_index()
+    current_dates = ndvi_payload.get("current_dates") or []
+    current_vals = ndvi_payload.get("current_vals") or []
+    hist_dates = ndvi_payload.get("hist_dates") or []
+    hist_vals = ndvi_payload.get("hist_vals") or []
+
+    if current_dates and current_vals:
+        df_current = pd.DataFrame({"date": pd.to_datetime(current_dates), "ndvi": current_vals})
+        df_current["ndvi"] = pd.to_numeric(df_current["ndvi"], errors="coerce") * 0.0001
+        df_current["doy"] = df_current["date"].dt.day_of_year
+        current_records = json.loads(df_current[["doy", "ndvi"]].dropna().round(4).to_json(orient="records"))
+    else:
+        current_records = []
+
+    if hist_dates and hist_vals:
+        df_hist = pd.DataFrame({"date": pd.to_datetime(hist_dates), "ndvi": hist_vals})
+        df_hist["ndvi"] = pd.to_numeric(df_hist["ndvi"], errors="coerce") * 0.0001
+        df_hist["doy"] = df_hist["date"].dt.day_of_year
+        hist_climatology = df_hist.dropna().groupby("doy")["ndvi"].agg(["mean", "std"]).reset_index()
+        hist_records = json.loads(hist_climatology.round(4).to_json(orient="records"))
+    else:
+        hist_records = []
 
     ndvi_timeseries = {
-        "current": json.loads(df_current[["doy", "ndvi"]].round(4).to_json(orient="records")),
-        "historical": json.loads(hist_climatology.round(4).to_json(orient="records")),
+        "current": current_records,
+        "historical": hist_records,
     }
 
-    # ---------------- Summary ----------------
-    # نفس مبدأ القص على الأراضي الزراعية + احتياط لو القص رجّع فاضي (مثلاً لو القناع
-    # مايغطيش المنطقة لأي سبب) — نرجع للمتوسط الكامل بدل ما نطلّع قيمة فارغة.
-    def region_mean(image, band_name, mask=True):
-        img = image.updateMask(CROPLAND_MASK) if mask else image
-        info = img.reduceRegion(reducer=ee.Reducer.mean(), geometry=AOI, scale=1000, maxPixels=1e9)
-        return info.get(band_name)
+    # ---------------- Summary (Single Batched Multi-Band reduceRegion + Centroid) ----------------
+    # دمج جميع المؤشرات (GSCSI + المكونات الـ 9 + الأمطار + انحراف الأمطار) في صورة واحدة
+    # واستدعاء reduceRegion مرة واحدة فقط بدلاً من 12-24 استدعاء متسلسل.
+    summary_image = ee.Image.cat([
+        GSCSI,
+        score_bands,
+        rain_current_season.rename("precipitation"),
+        rainfall_anomaly_pct,
+    ])
+    masked_summary_ee = summary_image.updateMask(CROPLAND_MASK).reduceRegion(
+        reducer=ee.Reducer.mean(), geometry=AOI, scale=1000, maxPixels=1e9, tileScale=4
+    )
+    summary_payload = _gee_get_info(ee.Dictionary({
+        "masked": masked_summary_ee,
+        "centroid": AOI.centroid(1).coordinates(),
+    })) or {}
 
-    gscsi_mean_val = region_mean(GSCSI, "GSCSI", mask=True)
-    if gscsi_mean_val is None:
-        gscsi_mean_val = region_mean(GSCSI, "GSCSI", mask=False)
+    masked_vals = summary_payload.get("masked") or {}
+    centroid = summary_payload.get("centroid") or [35.38, 14.03]
+
+    needed_bands = ["GSCSI", *GSCSI_WEIGHTS.keys(), "precipitation", "Rainfall_Anomaly_Pct"]
+    missing_bands = [b for b in needed_bands if masked_vals.get(b) is None]
+    fallback_vals = {}
+    if missing_bands:
+        fallback_vals = _gee_get_info(
+            summary_image.select(missing_bands).reduceRegion(
+                reducer=ee.Reducer.mean(), geometry=AOI, scale=1000, maxPixels=1e9, tileScale=4
+            )
+        ) or {}
+
+    def _pick_summary(band_name: str):
+        v = masked_vals.get(band_name)
+        return v if v is not None else fallback_vals.get(band_name)
+
+    gscsi_mean_val = _pick_summary("GSCSI")
     gscsi_mean = round(gscsi_mean_val, 1) if gscsi_mean_val is not None else None
 
-    # ---------------- متوسط كل مؤشر فرعي على حدة (لتحليل حساسية الأوزان لاحقاً) ----------------
-    # نحسبها هنا مرة واحدة فقط أثناء استدعاء GEE الأصلي، بحيث يمكن لاحقاً إعادة حساب GSCSI
-    # بأوزان بديلة محلياً في بايثون بدون أي استدعاءات GEE إضافية (سريع ومجاني).
     component_scores = {}
     for band_name in GSCSI_WEIGHTS.keys():
-        val = region_mean(score_bands, band_name, mask=True)
-        if val is None:
-            val = region_mean(score_bands, band_name, mask=False)
+        val = _pick_summary(band_name)
         component_scores[band_name] = round(val, 2) if val is not None else None
 
     if gscsi_mean is None:
@@ -638,14 +770,8 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
     else:
         gscsi_class_label = "فشل"
 
-    rain_mean_val = region_mean(rain_current_season, "precipitation", mask=True)
-    if rain_mean_val is None:
-        rain_mean_val = region_mean(rain_current_season, "precipitation", mask=False)
-    rain_anom_val = region_mean(rainfall_anomaly_pct, "Rainfall_Anomaly_Pct", mask=True)
-    if rain_anom_val is None:
-        rain_anom_val = region_mean(rainfall_anomaly_pct, "Rainfall_Anomaly_Pct", mask=False)
-
-    centroid = AOI.centroid(1).coordinates()  # [lon, lat]
+    rain_mean_val = _pick_summary("precipitation")
+    rain_anom_val = _pick_summary("Rainfall_Anomaly_Pct")
 
     return {
         "meta": {
@@ -659,8 +785,8 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
             "data_latency_adjusted": data_latency_adjusted,
             "crop_mask_applied": True,
             "crop_mask_source": "ESA WorldCover v200 (2021)",
-            "localities_with_cropland_data": int(crop_mask_coverage),
-            "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "localities_with_cropland_data": crop_mask_coverage,
+            "generated_at": _utc_now_iso(),
         },
         "summary": {
             "gscsi_mean": gscsi_mean,
@@ -701,15 +827,6 @@ def run_pipeline(season_year: int, start_month: int = 6, end_month: int = 10) ->
 # ==========================================================================
 # Leave-One-Year-Out (LOYO) Validation
 # ==========================================================================
-# يقارن متوسط GSCSI السنوي (state-level) على مستوى ولاية القضارف بغلة محصول
-# فعلية موثقة من تقارير FAO CFSAM (ground truth). بديل واقعي لـ Leave-One-Out
-# على مستوى المحلية، لأن بيانات الغلة الرسمية المتاحة هي على مستوى الولاية
-# سنوياً فقط. راجع backend/data/gedaref_ground_truth_yields.json لإضافة سنوات.
-#
-# تنبيه منهجي: مع أقل من ~6-8 سنوات مستقلة، نتائج LOYO مؤشر استكشافي أولي
-# فقط وليست تحققاً إحصائياً موثوقاً. الـ endpoint يُرجع تحذيراً صريحاً بهذا
-# الخصوص عندما يكون عدد السنوات المتاحة أقل من هذا الحد.
-
 def _ground_truth_path():
     return os.path.join(os.path.dirname(__file__), "data", "gedaref_ground_truth_yields.json")
 
@@ -760,11 +877,6 @@ def _pearson_r(xs, ys):
 
 def run_loyo_validation(crop: str = "sorghum", sector: str = "semi_mechanized",
                          start_month: int = 6, end_month: int = 10):
-    """
-    يحسب متوسط GSCSI السنوي (state-level) لكل سنة عندها غلة موثقة، ثم يُجري
-    Leave-One-Year-Out على انحدار خطي بسيط (GSCSI -> yield) لقياس القدرة
-    التنبؤية الأولية للمؤشر مقابل بيانات إنتاج حقيقية.
-    """
     ground_truth = _load_ground_truth(crop, sector)
     n = len(ground_truth)
 
@@ -780,7 +892,6 @@ def run_loyo_validation(crop: str = "sorghum", sector: str = "semi_mechanized",
             "note": "أضف سنوات إضافية إلى gedaref_ground_truth_yields.json",
         }
 
-    # نحسب (أو نسترجع من الكاش الموجود في app.py عبر run_pipeline) متوسط GSCSI لكل سنة
     points = []
     for record in ground_truth:
         year = record["season_year"]
@@ -808,7 +919,6 @@ def run_loyo_validation(crop: str = "sorghum", sector: str = "semi_mechanized",
     xs_all = [p["gscsi_mean"] for p in points]
     ys_all = [p["actual_yield_t_ha"] for p in points]
 
-    # ---------------- Leave-One-Year-Out ----------------
     loyo_results = []
     for i in range(n_valid):
         train_points = points[:i] + points[i + 1:]
@@ -830,7 +940,6 @@ def run_loyo_validation(crop: str = "sorghum", sector: str = "semi_mechanized",
     mae = sum(abs(e) for e in errors) / len(errors)
     rmse = (sum(e ** 2 for e in errors) / len(errors)) ** 0.5
 
-    # R^2 لعينة LOYO الكاملة (predicted من كل fold مقابل actual)
     actual_mean = sum(ys_all) / len(ys_all)
     ss_tot = sum((y - actual_mean) ** 2 for y in ys_all)
     ss_res = sum(e ** 2 for e in errors)
@@ -860,40 +969,18 @@ def run_loyo_validation(crop: str = "sorghum", sector: str = "semi_mechanized",
             "pearson_r_full_sample": round(pearson_full_sample, 3) if pearson_full_sample is not None else None,
         },
         "warnings": warnings,
-        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "generated_at": _utc_now_iso(),
     }
 
 
 # ==========================================================================
-# تحليل حساسية الأوزان (Weight Sensitivity Analysis)
+# تحليل حساسية الأوزان (Weight Sensitivity Analysis) — مصدر الحقيقة في config.py
 # ==========================================================================
-# فرضيات بديلة مُحدَّدة مسبقاً (قبل رؤية أي نتيجة) لتفادي "التنقيب بعد الحدث"
-# (post-hoc cherry-picking). كل فرضية هنا مبنية على ملاحظة من تقارير FAO: توزيع
-# الأمطار الزمني (فترات الجفاف الحرجة) أهم من المجموع الكلي في تحديد الغلة.
-
-WEIGHT_VARIANTS = {
-    "baseline": CFG.GSCSI_WEIGHTS,
-    "dry_spell_boost": {
-        "NDVI_Anomaly_Score": 0.14, "Rainfall_Anomaly_Score": 0.12, "VHI_Score": 0.13,
-        "SPEI_Score": 0.08, "SoilMoisture_Score": 0.08, "LST_Score": 0.11,
-        "NDMI_Score": 0.04, "LAI_Score": 0.05, "Dry_Spell_Score": 0.25,
-    },
-    "dry_spell_dominant": {
-        "NDVI_Anomaly_Score": 0.10, "Rainfall_Anomaly_Score": 0.08, "VHI_Score": 0.10,
-        "SPEI_Score": 0.07, "SoilMoisture_Score": 0.07, "LST_Score": 0.10,
-        "NDMI_Score": 0.03, "LAI_Score": 0.10, "Dry_Spell_Score": 0.35,
-    },
-}
+WEIGHT_VARIANTS = CFG.WEIGHT_VARIANTS
 
 
 def run_weight_sensitivity_analysis(crop: str = "sorghum", sector: str = "semi_mechanized",
                                      start_month: int = 6, end_month: int = 10):
-    """
-    يحسب GSCSI بأوزان بديلة (WEIGHT_VARIANTS) باستخدام نفس بيانات المؤشرات
-    الفرعية المستخرجة أصلاً من GEE (استدعاء واحد لكل سنة فقط)، ويقارن معامل
-    ارتباط بيرسون (على العينة الكاملة، وليس LOYO لأن هذا تحليل استكشافي أولي
-    وليس تحققاً تنبؤياً نهائياً) بين كل صيغة أوزان والغلة الفعلية.
-    """
     ground_truth = _load_ground_truth(crop, sector)
     n = len(ground_truth)
     if n < 3:
@@ -950,5 +1037,5 @@ def run_weight_sensitivity_analysis(crop: str = "sorghum", sector: str = "semi_m
         ),
         "variants_tested_predefined_before_seeing_results": list(WEIGHT_VARIANTS.keys()),
         "results": variant_results,
-        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "generated_at": _utc_now_iso(),
     }
