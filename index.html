@@ -494,8 +494,9 @@ function render(data){
   currentTiles = data.map.tiles;
   if (!map){
     map = L.map('map', { zoomControl: true }).setView(data.map.center, data.map.zoom);
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap &copy; CARTO'
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     }).addTo(map);
   } else {
     map.setView(data.map.center, data.map.zoom);
