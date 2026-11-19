@@ -14,7 +14,7 @@ concurrency:
 jobs:
   warm-cache:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Wake up Render server (/health)
         shell: bash
@@ -48,27 +48,48 @@ jobs:
           set -euo pipefail
           URL="https://agriculture-qpvc.onrender.com/api/gscsi?year=2026&start_month=6&end_month=10"
           ORIGIN="https://75nn12345872168.github.io"
+          MAX_ATTEMPTS=3
+          HTTP_CODE="000"
 
-          RESULT=$(curl -sS -o /tmp/gscsi_2026.json \
-            -w "http_code=%{http_code} time_total=%{time_total}s size_download=%{size_download}B" \
-            --max-time 150 \
-            -H "Origin: $ORIGIN" \
-            "$URL")
+          for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
+            RESULT=$(curl -sS -o /tmp/gscsi_2026.json \
+              -w "http_code=%{http_code} time_total=%{time_total}s size_download=%{size_download}B" \
+              --max-time 150 \
+              -H "Origin: $ORIGIN" \
+              "$URL" || echo "http_code=000 time_total=0s size_download=0B")
 
-          echo "Warm cache result: $RESULT"
-          HTTP_CODE=$(echo "$RESULT" | sed -n 's/.*http_code=\([0-9]*\).*/\1/p')
+            echo "[Attempt $ATTEMPT/$MAX_ATTEMPTS] Warm cache result: $RESULT"
+            HTTP_CODE=$(echo "$RESULT" | sed -n 's/.*http_code=\([0-9]*\).*/\1/p')
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              break
+            fi
+
+            if [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; then
+              echo "Transient status HTTP $HTTP_CODE (possible cold start); retrying in 10s..."
+              sleep 10
+            fi
+          done
 
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::Cache warming failed with HTTP $HTTP_CODE"
+            echo "::error::Cache warming failed with HTTP $HTTP_CODE after $MAX_ATTEMPTS attempts"
             head -c 500 /tmp/gscsi_2026.json || true
             exit 1
           fi
 
-          python3 -c '
+          python3 - <<'EOF'
           import json
+
           with open("/tmp/gscsi_2026.json", encoding="utf-8") as f:
               data = json.load(f)
-          s = data.get("summary", {})
-          m = data.get("meta", {})
-          print(f"Warmed season={m.get(\"season_year\")} gscsi_mean={s.get(\"gscsi_mean\")} label={s.get(\"gscsi_class_label\")} localities={len(data.get(\"localities\", []))}")
-          '
+
+          summary = data.get("summary", {})
+          meta = data.get("meta", {})
+          localities = data.get("localities", [])
+          print(
+              f"Warmed season={meta.get('season_year')} "
+              f"gscsi_mean={summary.get('gscsi_mean')} "
+              f"label={summary.get('gscsi_class_label')} "
+              f"localities={len(localities)}"
+          )
+          EOF
