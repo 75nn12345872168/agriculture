@@ -1,0 +1,74 @@
+name: Warm Render Cache (GSCSI 2026)
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: warm-render-cache
+  cancel-in-progress: false
+
+jobs:
+  warm-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wake up Render server (/health)
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://agriculture-qpvc.onrender.com/health"
+          DEADLINE=$((SECONDS + 90))
+          ATTEMPT=0
+
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            HTTP_CODE=$(curl -sS -o /tmp/health.json -w "%{http_code}" --max-time 10 "$URL" || echo "000")
+            echo "[Attempt $ATTEMPT | ${SECONDS}s] GET $URL -> HTTP $HTTP_CODE"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Server is awake: $(cat /tmp/health.json)"
+              exit 0
+            fi
+            REMAINING=$((DEADLINE - SECONDS))
+            if [ "$REMAINING" -le 0 ]; then
+              break
+            fi
+            sleep $(( REMAINING < 5 ? REMAINING : 5 ))
+          done
+
+          echo "::error::Render server did not return HTTP 200 within 90 seconds."
+          exit 1
+
+      - name: Warm GSCSI 2026 cache (/api/gscsi)
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://agriculture-qpvc.onrender.com/api/gscsi?year=2026&start_month=6&end_month=10"
+          ORIGIN="https://75nn12345872168.github.io"
+
+          RESULT=$(curl -sS -o /tmp/gscsi_2026.json \
+            -w "http_code=%{http_code} time_total=%{time_total}s size_download=%{size_download}B" \
+            --max-time 150 \
+            -H "Origin: $ORIGIN" \
+            "$URL")
+
+          echo "Warm cache result: $RESULT"
+          HTTP_CODE=$(echo "$RESULT" | sed -n 's/.*http_code=\([0-9]*\).*/\1/p')
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Cache warming failed with HTTP $HTTP_CODE"
+            head -c 500 /tmp/gscsi_2026.json || true
+            exit 1
+          fi
+
+          python3 -c '
+          import json
+          with open("/tmp/gscsi_2026.json", encoding="utf-8") as f:
+              data = json.load(f)
+          s = data.get("summary", {})
+          m = data.get("meta", {})
+          print(f"Warmed season={m.get(\"season_year\")} gscsi_mean={s.get(\"gscsi_mean\")} label={s.get(\"gscsi_class_label\")} localities={len(data.get(\"localities\", []))}")
+          '
