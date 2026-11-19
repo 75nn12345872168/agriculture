@@ -1,11 +1,12 @@
-name: Warm Render Cache (GSCSI 2026)
+name: Warm Render Cache & Update Snapshot (GSCSI 2026)
 
 on:
   schedule:
     - cron: '0 */4 * * *'
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: write
 
 concurrency:
   group: warm-render-cache
@@ -16,6 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Wake up Render server (/health)
         shell: bash
         run: |
@@ -42,7 +48,7 @@ jobs:
           echo "::error::Render server did not return HTTP 200 within 90 seconds."
           exit 1
 
-      - name: Warm GSCSI 2026 cache (/api/gscsi)
+      - name: Warm GSCSI 2026 cache & save static snapshot
         shell: bash
         run: |
           set -euo pipefail
@@ -77,19 +83,52 @@ jobs:
             exit 1
           fi
 
+          mkdir -p data
           python3 - <<'EOF'
           import json
+          import pathlib
 
           with open("/tmp/gscsi_2026.json", encoding="utf-8") as f:
               data = json.load(f)
+
+          required_keys = ("meta", "summary", "map", "localities", "ndvi_timeseries", "phenology")
+          missing = [k for k in required_keys if k not in data]
+          if missing:
+              raise ValueError(f"Incomplete GSCSI payload; missing keys: {missing}")
+
+          # حذف request_id المتغير في كل طلب حتى لا يسبب commit بلا تغيير فعلي في البيانات
+          data.pop("request_id", None)
+
+          out_path = pathlib.Path("data/gscsi_2026.json")
+          out_path.write_text(
+              json.dumps(data, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
+              encoding="utf-8",
+          )
 
           summary = data.get("summary", {})
           meta = data.get("meta", {})
           localities = data.get("localities", [])
           print(
-              f"Warmed season={meta.get('season_year')} "
+              f"Saved {out_path} | season={meta.get('season_year')} "
               f"gscsi_mean={summary.get('gscsi_mean')} "
               f"label={summary.get('gscsi_class_label')} "
-              f"localities={len(localities)}"
+              f"localities={len(localities)} "
+              f"generated_at={meta.get('generated_at')}"
           )
           EOF
+
+      - name: Commit & push updated snapshot if changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- data/gscsi_2026.json && [ -z "$(git ls-files --others --exclude-standard data/gscsi_2026.json)" ]; then
+            echo "Snapshot data/gscsi_2026.json unchanged — skipping commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/gscsi_2026.json
+          git commit -m "chore(data): update GSCSI 2026 static snapshot"
+          git pull --rebase origin main
+          git push origin main

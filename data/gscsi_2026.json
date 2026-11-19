@@ -1,0 +1,219 @@
+{
+  "localities": [
+    {
+      "ADM2_NAME": "Al Rahd",
+      "GSCSI": 50.41,
+      "GSCSI_Class_Label": "متوسط",
+      "NDMI": -0.08,
+      "NDVI": 0.23,
+      "Rain_Season_mm": 374.2,
+      "Rainfall_Anomaly_Pct": -30.33,
+      "TCI": 99.03,
+      "VCI": 47.44
+    },
+    {
+      "ADM2_NAME": "Al Faw",
+      "GSCSI": 49.18,
+      "GSCSI_Class_Label": "خطر",
+      "NDMI": -0.13,
+      "NDVI": 0.15,
+      "Rain_Season_mm": 292.36,
+      "Rainfall_Anomaly_Pct": -26.25,
+      "TCI": 97.21,
+      "VCI": 36.53
+    },
+    {
+      "ADM2_NAME": "Al Galabat",
+      "GSCSI": 47.9,
+      "GSCSI_Class_Label": "خطر",
+      "NDMI": -0.06,
+      "NDVI": 0.28,
+      "Rain_Season_mm": 440.74,
+      "Rainfall_Anomaly_Pct": -34.87,
+      "TCI": 97.95,
+      "VCI": 38.18
+    },
+    {
+      "ADM2_NAME": "Al Gadaref",
+      "GSCSI": 47.03,
+      "GSCSI_Class_Label": "خطر",
+      "NDMI": -0.15,
+      "NDVI": 0.17,
+      "Rain_Season_mm": 387.68,
+      "Rainfall_Anomaly_Pct": -28.36,
+      "TCI": 98.76,
+      "VCI": 29.25
+    },
+    {
+      "ADM2_NAME": "Al Fushqa",
+      "GSCSI": 45.2,
+      "GSCSI_Class_Label": "خطر",
+      "NDMI": -0.11,
+      "NDVI": 0.2,
+      "Rain_Season_mm": 395.41,
+      "Rainfall_Anomaly_Pct": -31.69,
+      "TCI": 95.82,
+      "VCI": 27.45
+    }
+  ],
+  "map": {
+    "center": [
+      14.09796732233935,
+      35.09696697779991
+    ],
+    "class_labels": {
+      "1": "فشل",
+      "2": "خطر",
+      "3": "متوسط",
+      "4": "جيد",
+      "5": "ممتاز"
+    },
+    "class_palette": [
+      "a50026",
+      "f46d43",
+      "fee08b",
+      "66bd63",
+      "1a9850"
+    ],
+    "tiles": {
+      "class": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/001b9c5a18a0113853bc2cc3659665c5-a2087211aac4dbb3f8a7ea43a721df4e/tiles/{z}/{x}/{y}",
+      "gscsi": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/a32c6cba6b313e6bb2c2463a580cff7a-38ce604181cdd0096672d8158e11c737/tiles/{z}/{x}/{y}",
+      "ndvi": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/76e46f67bc9be8c09f033a4ff2f8793c-3f37235ca9effde0e1882fd536c9c1c2/tiles/{z}/{x}/{y}",
+      "rainfall_anomaly": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/821eb1b033cf15af5bd2494ccd6f450e-cea9fa5541ad2556852cdaf4305dcd5c/tiles/{z}/{x}/{y}"
+    },
+    "zoom": 8
+  },
+  "meta": {
+    "crop_mask_applied": true,
+    "crop_mask_source": "ESA WorldCover v200 (2021)",
+    "data_latency_adjusted": false,
+    "effective_cutoff_date": null,
+    "end_month": 10,
+    "generated_at": "2026-11-19T19:17:16.353990Z",
+    "is_ytd": false,
+    "localities_with_cropland_data": 5,
+    "season_year": 2026,
+    "start_month": 6
+  },
+  "ndvi_timeseries": {
+    "current": [
+      {
+        "doy": 161,
+        "ndvi": 0.1912
+      },
+      {
+        "doy": 177,
+        "ndvi": 0.2051
+      },
+      {
+        "doy": 193,
+        "ndvi": 0.1986
+      },
+      {
+        "doy": 209,
+        "ndvi": 0.2607
+      },
+      {
+        "doy": 225,
+        "ndvi": 0.3532
+      },
+      {
+        "doy": 241,
+        "ndvi": 0.4367
+      },
+      {
+        "doy": 257,
+        "ndvi": 0.4987
+      },
+      {
+        "doy": 273,
+        "ndvi": 0.4649
+      },
+      {
+        "doy": 289,
+        "ndvi": 0.3659
+      }
+    ],
+    "historical": [
+      {
+        "doy": 161,
+        "mean": 0.1855,
+        "std": 0.0145
+      },
+      {
+        "doy": 177,
+        "mean": 0.2091,
+        "std": 0.0197
+      },
+      {
+        "doy": 193,
+        "mean": 0.2448,
+        "std": 0.0312
+      },
+      {
+        "doy": 209,
+        "mean": 0.3065,
+        "std": 0.0474
+      },
+      {
+        "doy": 225,
+        "mean": 0.3983,
+        "std": 0.0596
+      },
+      {
+        "doy": 241,
+        "mean": 0.4688,
+        "std": 0.0438
+      },
+      {
+        "doy": 257,
+        "mean": 0.4941,
+        "std": 0.0402
+      },
+      {
+        "doy": 273,
+        "mean": 0.4652,
+        "std": 0.0504
+      },
+      {
+        "doy": 289,
+        "mean": 0.4042,
+        "std": 0.057
+      },
+      {
+        "doy": 305,
+        "mean": 0.3431,
+        "std": 0.0627
+      }
+    ]
+  },
+  "phenology": {
+    "data_cutoff_date": null,
+    "flowering_rainfall_anomaly_pct": -30.0,
+    "flowering_window": [
+      "2026-08-04",
+      "2026-09-13"
+    ],
+    "note": "تاريخ بداية الموسم مُكتشف ديناميكياً من بيانات الأمطار الفعلية (3 عشاريات متتالية بأمطار كافية)، ونافذة الإزهار مُشتقة منه حسب أطوال مراحل نمو الذرة الرفيعة القياسية (FAO-56). البيانات من CHIRPS النهائي (الأدق والمُتحقَّق من مطابقته للقيم المرجعية)، فقد تظهر بداية الموسم متأخرة عن الواقع الفعلي بسبب فجوة نشر البيانات المعتادة.",
+    "onset_anomaly_days": 0,
+    "onset_date": "2026-06-10",
+    "typical_onset_date": "2026-06-10"
+  },
+  "summary": {
+    "component_scores": {
+      "Dry_Spell_Score": 88.56,
+      "LAI_Score": 5.69,
+      "LST_Score": 91.15,
+      "NDMI_Score": 22.48,
+      "NDVI_Anomaly_Score": 43.91,
+      "Rainfall_Anomaly_Score": 25.0,
+      "SPEI_Score": 12.41,
+      "SoilMoisture_Score": 38.38,
+      "VHI_Score": 68.51
+    },
+    "gscsi_class_label": "خطر",
+    "gscsi_mean": 48.9,
+    "rain_season_mm": 365.9,
+    "rainfall_anomaly_pct": -30.0
+  }
+}

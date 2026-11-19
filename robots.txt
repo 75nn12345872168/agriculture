@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /backend/
+Disallow: /tests/
+
+# عدّل الرابط أدناه عند ربط نطاق مخصص (Custom Domain)
+Sitemap: https://75nn12345872168.github.io/agriculture/sitemap.xml

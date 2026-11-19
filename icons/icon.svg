@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="GSCSI Gedaref Agricultural Early Warning System">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b3502e"/>
+      <stop offset="55%" stop-color="#c9752b"/>
+      <stop offset="100%" stop-color="#d99a2b"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#6f9c4a"/>
+      <stop offset="100%" stop-color="#2f6e3d"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#faf6ec" stroke-opacity="0.22" stroke-width="8" stroke-dasharray="18 14"/>
+  <!-- Satellite radar arc -->
+  <path d="M124 180 A156 156 0 0 1 388 180" fill="none" stroke="#faf6ec" stroke-opacity="0.85" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="388" cy="180" r="14" fill="#faf6ec"/>
+  <!-- Sorghum / grain stalk -->
+  <path d="M256 392 L256 146" stroke="#faf6ec" stroke-width="14" stroke-linecap="round"/>
+  <!-- Leaves -->
+  <path d="M256 346 C198 342 154 306 144 260 C196 266 236 296 256 346 Z" fill="url(#leaf)" stroke="#faf6ec" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M256 346 C314 342 358 306 368 260 C316 266 276 296 256 346 Z" fill="url(#leaf)" stroke="#faf6ec" stroke-width="6" stroke-linejoin="round"/>
+  <!-- Grain pods -->
+  <ellipse cx="222" cy="244" rx="22" ry="34" transform="rotate(-26 222 244)" fill="#faf6ec"/>
+  <ellipse cx="290" cy="244" rx="22" ry="34" transform="rotate(26 290 244)" fill="#faf6ec"/>
+  <ellipse cx="226" cy="186" rx="20" ry="30" transform="rotate(-22 226 186)" fill="#faf6ec"/>
+  <ellipse cx="286" cy="186" rx="20" ry="30" transform="rotate(22 286 186)" fill="#faf6ec"/>
+  <ellipse cx="256" cy="134" rx="18" ry="28" fill="#faf6ec"/>
+</svg>

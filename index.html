@@ -4,6 +4,39 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>GSCSI — نظام الإنذار المبكر الزراعي | ولاية القضارف</title>
+<meta name="description" content="نظام GSCSI للإنذار المبكر الزراعي ومراقبة صحة المحاصيل والأمطار في ولاية القضارف بالسودان باستخدام صور الأقمار الصناعية Sentinel-2 وCHIRPS وMODIS وERA5-Land عبر Google Earth Engine." />
+<meta name="keywords" content="GSCSI, الإنذار المبكر الزراعي, ولاية القضارف, السودان, الزراعة المطرية, الذرة الرفيعة, السمسم, NDVI, CHIRPS, Sentinel-2, MODIS, ERA5-Land, رصد الجفاف, الاستشعار عن بعد" />
+<meta name="author" content="نظام GSCSI للإنذار المبكر الزراعي — ولاية القضارف" />
+<meta name="robots" content="index, follow" />
+<meta name="theme-color" content="#b3502e" />
+<link rel="canonical" href="https://75nn12345872168.github.io/agriculture/" />
+<link rel="alternate" hreflang="ar" href="https://75nn12345872168.github.io/agriculture/" />
+<link rel="alternate" hreflang="x-default" href="https://75nn12345872168.github.io/agriculture/" />
+
+<!-- Open Graph / Social Sharing -->
+<meta property="og:type" content="website" />
+<meta property="og:locale" content="ar_SD" />
+<meta property="og:site_name" content="نظام GSCSI للإنذار المبكر الزراعي" />
+<meta property="og:title" content="GSCSI — نظام الإنذار المبكر الزراعي | ولاية القضارف" />
+<meta property="og:description" content="خريطة تفاعلية ومؤشرات حية لصحة المحاصيل وانحراف الأمطار وبداية الموسم الزراعي في محليات ولاية القضارف عبر صور الأقمار الصناعية." />
+<meta property="og:url" content="https://75nn12345872168.github.io/agriculture/" />
+<meta property="og:image" content="https://75nn12345872168.github.io/agriculture/icons/icon-512.png" />
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="GSCSI — نظام الإنذار المبكر الزراعي | ولاية القضارف" />
+<meta name="twitter:description" content="مؤشر GSCSI المركب وخريطة الرصد الزراعي لمحليات ولاية القضارف باستخدام Sentinel-2 وCHIRPS وMODIS وERA5-Land." />
+<meta name="twitter:image" content="https://75nn12345872168.github.io/agriculture/icons/icon-512.png" />
+
+<!-- PWA Manifest & Icons -->
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="GSCSI القضارف" />
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@500;700;800&family=Tajawal:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
@@ -149,8 +182,48 @@
   }
   .table-scroll{ max-height:320px; overflow:auto; }
 
-  footer{ text-align:center; padding:24px; color:var(--ink-soft); font-size:0.78rem; }
-  footer a{ color:var(--clay-deep); }
+  .freshness-meta{
+    margin-top:6px; padding-top:8px; border-top:1px dashed var(--line);
+    font-size:0.78rem; color:var(--ink-soft); display:flex; flex-direction:column; gap:3px;
+  }
+  .freshness-meta strong{ color:var(--ink); font-weight:700; }
+
+  footer{
+    margin-top:32px;
+    background:linear-gradient(180deg, rgba(31,42,68,0.96), #162036);
+    color:#e9edf8;
+    border-top:3px solid var(--clay);
+    padding:30px clamp(16px,4vw,48px) 26px;
+    font-size:0.84rem;
+    line-height:1.8;
+  }
+  .footer-inner{
+    max-width:1360px; margin:0 auto;
+    display:grid; grid-template-columns:1.2fr 1.3fr; gap:24px;
+  }
+  @media (max-width: 820px){ .footer-inner{ grid-template-columns:1fr; } }
+  .footer-title{
+    font-family:'Cairo',sans-serif; font-size:1.02rem; font-weight:800;
+    margin:0 0 8px; color:#faf6ec; display:flex; align-items:center; gap:8px;
+  }
+  .footer-sources{ margin:0; color:rgba(233,237,248,0.82); font-size:0.82rem; }
+  .footer-advisory{
+    background:rgba(217,154,43,0.12);
+    border:1px solid rgba(217,154,43,0.35);
+    border-radius:12px;
+    padding:12px 15px;
+    color:#f6ebd2;
+    font-size:0.81rem;
+  }
+  .footer-advisory strong{ color:var(--sorghum); display:block; margin-bottom:4px; font-family:'Cairo',sans-serif; }
+  .footer-bottom{
+    max-width:1360px; margin:18px auto 0; padding-top:14px;
+    border-top:1px solid rgba(255,255,255,0.12);
+    display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;
+    font-size:0.77rem; color:rgba(233,237,248,0.72);
+  }
+  footer a{ color:#f2c265; text-decoration:none; font-weight:700; }
+  footer a:hover{ text-decoration:underline; }
 
   .state-msg{
     display:flex; align-items:center; justify-content:center; gap:10px; padding:60px 20px;
@@ -240,6 +313,10 @@
         <span style="font-size:0.86rem; line-height:1.9;">
           🛰️ Sentinel-2 / Landsat 8-9 · 🌧️ CHIRPS · 📡 MODIS · 💧 ERA5-Land
         </span>
+        <div class="freshness-meta" id="freshnessMeta">
+          <span>آخر تحديث للبيانات: <strong id="lastUpdatedVal">—</strong></span>
+          <span id="dataSourceBadge" style="font-size:0.74rem; opacity:0.85;">—</span>
+        </div>
       </div>
     </section>
 
@@ -279,8 +356,27 @@
 </main>
 
 <footer>
-  نظام GSCSI — ولاية القضارف، السودان · مبني على Google Earth Engine ·
-  <a href="#" id="rawJsonLink">عرض بيانات API الخام</a>
+  <div class="footer-inner">
+    <div>
+      <h2 class="footer-title">🌾 نظام GSCSI للإنذار المبكر الزراعي — ولاية القضارف</h2>
+      <p class="footer-sources">
+        منصة رصد زراعي تعتمد على المعالجة السحابية عبر <strong>Google Earth Engine</strong> لدمج بيانات الأقمار الصناعية:
+        <strong>Sentinel-2 (ESA)</strong> و<strong>Landsat 8–9 (USGS/NASA)</strong> لمؤشرات الغطاء النباتي ورطوبة المحصول وحرارة السطح،
+        و<strong>CHIRPS (UCSB)</strong> للأمطار والانحرافات المطرية،
+        و<strong>MODIS (NASA)</strong> للسلسلة التاريخية لـ NDVI وLAI،
+        و<strong>ERA5-Land (ECMWF)</strong> لرطوبة التربة،
+        وقناع الأراضي الزراعية <strong>ESA WorldCover v200</strong>.
+      </p>
+    </div>
+    <div class="footer-advisory" role="note">
+      <strong>⚠️ تنبيه إرشادي للمزارعين ومتخذي القرار</strong>
+      تمثّل مؤشرات GSCSI أداة مساندة للإنذار المبكر وتقدير حالة الموسم على مستوى المحليات بالاستشعار عن بُعد، ولا تُغني عن المعاينة الحقلية المباشرة وتوجيهات الإرشاد الزراعي المحلي بولاية القضارف عند اتخاذ قرارات الزراعة أو الري أو الحصاد.
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© نظام GSCSI — ولاية القضارف، السودان · <span id="footerUpdated">آخر تحديث: —</span></span>
+    <span><a href="./data/gscsi_2026.json" id="rawJsonLink" target="_blank" rel="noopener">عرض بيانات JSON الخام</a></span>
+  </div>
 </footer>
 
 <script>
@@ -407,23 +503,81 @@ async function fetchWithRetry(url, options={}, retries=2, baseDelay=4000, timeou
   }
 }
 
+const DEFAULT_SNAPSHOT_URL = "./data/gscsi_2026.json";
+
+function formatArabicDateTime(isoStr){
+  if(!isoStr) return "غير متوفر";
+  try{
+    const d = new Date(isoStr);
+    if(isNaN(d.getTime())) return isoStr;
+    return new Intl.DateTimeFormat("ar-SD", {
+      year: "numeric", month: "long", day: "numeric",
+      hour: "2-digit", minute: "2-digit", timeZoneName: "short"
+    }).format(d);
+  }catch(e){
+    return isoStr;
+  }
+}
+
+async function tryLoadStaticSnapshot(){
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 8000);
+  try{
+    const res = await fetch(DEFAULT_SNAPSHOT_URL, { cache: "no-cache", signal: ctrl.signal });
+    clearTimeout(timeout);
+    if(!res.ok) return null;
+    const data = await res.json();
+    if(!data || !data.summary || !data.meta || !data.map) return null;
+    return data;
+  }catch(e){
+    clearTimeout(timeout);
+    console.warn("[GSCSI] Static snapshot unavailable, falling back to live API:", e.message);
+    return null;
+  }
+}
+
+function showRenderedDashboard(data, sourceMode){
+  // إظهار حاوية #dashboard قبل تهيئة خريطة Leaflet والرسم البياني لمنع ظهور الخريطة مقصوصة أو رمادية
+  stateReady();
+  render(data, sourceMode);
+  if (map) {
+    map.invalidateSize();
+    requestAnimationFrame(() => map && map.invalidateSize());
+    setTimeout(() => map && map.invalidateSize(), 150);
+  }
+}
+
 async function loadData(){
   const year = yearSelect.value;
   const [startMonth, endMonth] = document.getElementById('monthsSelect').value.split(',');
   const btn = document.getElementById('runBtn');
   btn.disabled = true;
 
-  // Mixed Content guard
-  if(location.protocol === "https:" && API_BASE_URL.startsWith("http://")){
-    stateError(`خطأ إعداد: الصفحة محملة بـ HTTPS لكن API_BASE_URL يستخدم HTTP (<code>${API_BASE_URL}</code>). المتصفح يحظر هذا (Mixed Content). غيّر API_BASE_URL إلى https.`, loadData);
-    btn.disabled = false;
-    return;
-  }
-
-  const url = `${API_BASE_URL}/api/gscsi?year=${year}&start_month=${startMonth}&end_month=${endMonth}`;
-  document.getElementById('rawJsonLink').href = url;
+  const params = new URLSearchParams(location.search);
+  const forceLive = params.has("api") || params.get("live") === "1";
+  const isDefaultSeason = (year === "2026" && startMonth === "6" && endMonth === "10");
 
   try{
+    // المسار السريع: قراءة فورية من اللقطة المحفوظة للموسم الافتراضي (2026: يونيو → أكتوبر)
+    if (isDefaultSeason && !forceLive) {
+      stateLoading("⚡ جاري تحميل بيانات موسم 2026…");
+      const snap = await tryLoadStaticSnapshot();
+      if (snap) {
+        document.getElementById('rawJsonLink').href = DEFAULT_SNAPSHOT_URL;
+        showRenderedDashboard(snap, "snapshot");
+        return;
+      }
+    }
+
+    // المسار الحي (Render API): عند اختيار سنة/أشهر مختلفة أو عدم توفر اللقطة الثابتة
+    if(location.protocol === "https:" && API_BASE_URL.startsWith("http://")){
+      stateError(`خطأ إعداد: الصفحة محملة بـ HTTPS لكن API_BASE_URL يستخدم HTTP (<code>${API_BASE_URL}</code>). المتصفح يحظر هذا (Mixed Content). غيّر API_BASE_URL إلى https.`, loadData);
+      return;
+    }
+
+    const url = `${API_BASE_URL}/api/gscsi?year=${year}&start_month=${startMonth}&end_month=${endMonth}`;
+    document.getElementById('rawJsonLink').href = url;
+
     // المرحلة 1: إيقاظ الخادم قبل بدء حسابات GEE حتى لا يستهلك Cold Start مهلة الطلب
     const awake = await wakeUpServer(6);
     if(!awake){
@@ -436,14 +590,7 @@ async function loadData(){
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `خطأ ${res.status} من الخادم`);
 
-    // إظهار حاوية #dashboard قبل تهيئة خريطة Leaflet والرسم البياني لمنع ظهور الخريطة مقصوصة أو رمادية
-    stateReady();
-    render(data);
-    if (map) {
-      map.invalidateSize();
-      requestAnimationFrame(() => map && map.invalidateSize());
-      setTimeout(() => map && map.invalidateSize(), 150);
-    }
+    showRenderedDashboard(data, "live");
   }catch(err){
     const isAbort = err.name === "AbortError";
     const msg = isAbort ? "انتهت مهلة حساب المؤشر — حاول مرة أخرى بعد لحظات" : err.message;
@@ -454,7 +601,20 @@ async function loadData(){
   }
 }
 
-function render(data){
+function render(data, sourceMode="live"){
+  // --- Last updated & source freshness ---
+  const updatedText = formatArabicDateTime(data.meta && data.meta.generated_at);
+  const lastUpdatedEl = document.getElementById('lastUpdatedVal');
+  if (lastUpdatedEl) lastUpdatedEl.textContent = updatedText;
+  const footerUpdatedEl = document.getElementById('footerUpdated');
+  if (footerUpdatedEl) footerUpdatedEl.textContent = `آخر تحديث: ${updatedText}`;
+  const sourceBadgeEl = document.getElementById('dataSourceBadge');
+  if (sourceBadgeEl) {
+    sourceBadgeEl.textContent = sourceMode === "snapshot"
+      ? "⚡ تحميل فوري من النسخة المحفوظة (تُحدَّث تلقائياً كل 4 ساعات)"
+      : "🛰️ حساب حي مباشر من خادم Google Earth Engine";
+  }
+
   // --- Gauge ---
   const val = data.summary.gscsi_mean ?? 0;
   const label = data.summary.gscsi_class_label;
