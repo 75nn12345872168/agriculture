@@ -76,10 +76,10 @@
       "1a9850"
     ],
     "tiles": {
-      "class": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/0875ff6e3615319f7381d6282d4c8aee-0e78bad3b57883df047ef474c8d020e9/tiles/{z}/{x}/{y}",
-      "gscsi": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/3cbcece3cb48434c2cdf5c394ff0cf19-483fbd2a3338fdc22b52615eed0596e7/tiles/{z}/{x}/{y}",
-      "ndvi": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/87d8e0beeef581e451f865cb63724fa3-82edfcc097f72d64e914db1e2add8aba/tiles/{z}/{x}/{y}",
-      "rainfall_anomaly": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/821eb1b033cf15af5bd2494ccd6f450e-c9ed094270dbf69cbe215869ad9c5275/tiles/{z}/{x}/{y}"
+      "class": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/0b0f1ba74a876c9b41b5dd952f240aa9-404df2c5f4c549105c676ac2e74707d4/tiles/{z}/{x}/{y}",
+      "gscsi": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/5d4497377e979d8cb4b5b74df3a96106-75c5b23c088fcf4984a3e73d04727095/tiles/{z}/{x}/{y}",
+      "ndvi": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/fc5d465107ea6d7f412056b4a09fec40-279e99403eb372bfdbce01392e184ffa/tiles/{z}/{x}/{y}",
+      "rainfall_anomaly": "https://earthengine.googleapis.com/v1/projects/directed-seeker-442207-q1/maps/821eb1b033cf15af5bd2494ccd6f450e-c5a10905dcdeeac13a714e4a9a1073e7/tiles/{z}/{x}/{y}"
     },
     "zoom": 8
   },
@@ -89,7 +89,7 @@
     "data_latency_adjusted": false,
     "effective_cutoff_date": null,
     "end_month": 10,
-    "generated_at": "2026-11-21T21:16:31.211833Z",
+    "generated_at": "2026-11-22T03:42:23.881169Z",
     "is_ytd": false,
     "localities_with_cropland_data": 5,
     "season_year": 2026,
